@@ -25,20 +25,30 @@ typedef enum {
     MOV = 0x10, ADD, SUB, MUL, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
 } OpCode;
 
-//Tamaños usados
+//Tamaï¿½os usados
 typedef uint8_t Byte;
 typedef uint32_t Register;
 
+typedef struct {
+    Byte     mem[RAM_SIZE];      // memoria RAM - 16384 celdas de 1 byte cada una
+    Register reg[REG_AMOUNT];    // bancos de registros - 32 registros de 4 bytes cada uno
+} MV;
+
+static void inicializacion(MV *mv) {
+    unsigned int i;
+
+    for (i = 0; i < RAM_SIZE; i++) mv->mem[i] = 0;
+    for (i = 0; i < REG_AMOUNT; i++) mv->reg[i] = 0;
+
+    mv->reg[CS] = CS_POS;
+    mv->reg[DS] = DS_POS;
+    mv->reg[IP] = mv->reg[CS];
+}
+
 int main() {
-    Byte Mem[RAM_SIZE];             // 16384 celdas de 1 byte cada una
-    Register Reg[REG_AMOUNT];       // 32 registros de 4 bytes cada uno
-
+    MV mv;
+    inicializacion(&mv);
     //TODO arranque de la lectura del archivo y su verificacion
-
-    //Inicializacion
-    Reg[CS] = CS_POS;
-    Reg[DS] = DS_POS;
-    Reg[IP] = Reg[CS];
 
     //TODO while
     //TODO fetch
