@@ -34,7 +34,7 @@ typedef struct {
     Register reg[REG_AMOUNT];    // bancos de registros - 32 registros de 4 bytes cada uno
 } MV;
 
-static void inicializacion(MV *mv) {
+void inicializacion(MV *mv) {
     unsigned int i;
 
     for (i = 0; i < RAM_SIZE; i++) mv->mem[i] = 0;
