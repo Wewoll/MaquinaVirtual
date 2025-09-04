@@ -1,15 +1,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
-#define RAM_SIZE (16 * 1024)    // 16 KiB
+#define RAM_SIZE   (16 * 1024)  // 16 KiB
 #define REG_AMOUNT 32           // 32 registros
 #define SEG_AMOUNT 2            // 2 descriptores de segmentos
 
 #define CS_POS 0x00000000       // Primer entrada
 #define DS_POS 0x00010000       // Segunda entrada
 
-#define HEADER_RANGE 8
+#define MASK_SEG   0xFFFF0000   // Mascara para agarrar bits de segmento
+#define MASK_UNSEG 0x0000FFFF   // Mascara para quitar bits de segmento
+#define IN_CS      0            // Valor para chequear si se esta dentro de CS
+
+#define MASK_Z    0x00000000
+
+#define MASKB_OPC 0b00011111
+#define MASK_OPC  0x000000FF
+#define MASKB_OP1 0b00110000
+#define MASK_OP2  0x00FF0000
+#define MASKB_OP2 0b11000000
+#define MASK_OP2  0xFF000000
+
+#define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
 
 //Define de registros
 typedef enum {
@@ -49,6 +63,7 @@ typedef struct {
 void readFile(const char *filename, int *err, TMV *mv);
 void initialization(TMV *mv, TwoBytes codeSize);
 
+
 int main(int argc, char *argv[]) {
     TMV mv;
     int err = 0;
@@ -58,9 +73,9 @@ int main(int argc, char *argv[]) {
         err++;
     }
     else {
-        readFile(argv[1], &err, &mv)
+        readFile(argv[1], &err, &mv);
         if (err == 0) {
-            //executeProgram(&mv); Siguiente paso (va, eso y hacer las funciones de cada cosa)
+            executeProgram(&mv);
         }
     }
 
@@ -116,17 +131,43 @@ void readFile(const char *filename, int *err, TMV *mv) {
 void initialization(TMV *mv, TwoBytes codeSize) {
     unsigned int i;
 
+    //Inicio de la tabla de descriptores de segmentos
     mv->seg[0].base = 0;
     mv->seg[0].size = codeSize;
     mv->seg[1].base = codeSize;
     mv->seg[1].size = RAM_SIZE - codeSize;
 
+    //Inicio de la memoria y los registros
     for (i = 0; i < RAM_SIZE; i++)
         mv->mem[i] = 0;
     for (i = 0; i < REG_AMOUNT; i++)
         mv->reg[i] = 0;
 
+    //Inicio de las pocisiones de CS, DS e IP
     mv->reg[CS] = CS_POS;
     mv->reg[DS] = DS_POS;
     mv->reg[IP] = mv->reg[CS];
+}
+
+//Probablemente no ande porque falta casteo ya que temp es Byte y no Register
+void fetchInstruction(TMV* mv) {
+    Byte temp;
+    temp = mv->mem[mv->reg[IP] & MASK_UNSEG];
+    mv->reg[OPC] = (temp & MASKB_OPC) && MASK_OPC;
+    mv->reg[OP1] = ((temp & MASKB_OP2) << 18) && MASK_OP2;
+    if (temp & MASKB_OP1 != 0) {
+        mv->reg[OP2] = ((temp & MASKB_OP2) << 18) && MASK_OP2;
+        mv->reg[OP1] = ((temp & MASKB_OP1) << 20) && MASK_OP1;
+    }
+    else {
+        mv->reg[OP2] = MASK_Z;
+        mv->reg[OP1] = ((temp & MASKB_OP2) << 18) && MASK_OP2;
+    }
+}
+
+void executeProgram(TMV* mv) {
+    while ((mv->reg[IP] & MASK_SEG) >> 16 == IN_CS) {
+        fetchInstruction(mv);
+        //fetchOperators(mv);
+    }
 }
