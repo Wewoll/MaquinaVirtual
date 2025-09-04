@@ -61,8 +61,8 @@ typedef struct {
 void readFile(const char *filename, int *err, TMV *mv);
 void initialization(TMV *mv, TwoBytes codeSize);
 void fetchInstruction(TMV* mv);
+void fetchOperators(TMV* mv);
 void executeProgram(TMV* mv);
-
 
 int main(int argc, char *argv[]) {
     TMV mv;
@@ -166,13 +166,30 @@ void fetchInstruction(TMV* mv) {
 
     if ((temp & MASKB_OP1) != 0) {              //Si hay dos operandos, mueve la OP1 a OP2 y agarra el tipo de OP1
         mv->reg[OP2] = mv->reg[OP1];
-        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;     //Aca deberia ir una excepcion de error en caso de que el tipo sea inmediato (porque no puede serlo)
+        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;     //Aca deberia ir una excepcion de error en caso de que el tipo sea inmediato (porque no puede serlo) o capaz podria estar en fetchOperator
     }
+}
+
+//Capaz me salgo de la memoria, revisar mas tarde
+//Falta para OP2 (seria lo mismo que OP1)
+void fetchOperators(TMV* mv) {
+    Register temp;
+    int i;
+
+    mv->reg[IP]++;
+
+    temp = 0;
+    i = mv->reg[OP1] >> 24;
+    for (; i > 0; i--) {
+        temp |= ((Register)mv->mem[mv->reg[IP] & MASK_UNSEG]) << (8 * i);
+        mv->reg[IP]++;
+    }
+    mv->reg[OP1] = mv->reg[OP1] | temp;
 }
 
 void executeProgram(TMV* mv) {
     while ((mv->reg[IP] & MASK_SEG) >> 16 == IN_CS) {
         fetchInstruction(mv);
-        //fetchOperators(mv);
+        fetchOperators(mv);
     }
 }
