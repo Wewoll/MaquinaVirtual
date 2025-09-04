@@ -14,12 +14,10 @@
 #define MASK_UNSEG 0x0000FFFF   // Mascara para quitar bits de segmento
 #define IN_CS      0            // Valor para chequear si se esta dentro de CS
 
-#define MASK_Z    0x00000000
-
 #define MASKB_OPC 0b00011111
 #define MASK_OPC  0x000000FF
 #define MASKB_OP1 0b00110000
-#define MASK_OP2  0x00FF0000
+#define MASK_OP1  0x00FF0000
 #define MASKB_OP2 0b11000000
 #define MASK_OP2  0xFF000000
 
@@ -62,6 +60,8 @@ typedef struct {
 
 void readFile(const char *filename, int *err, TMV *mv);
 void initialization(TMV *mv, TwoBytes codeSize);
+void fetchInstruction(TMV* mv);
+void executeProgram(TMV* mv);
 
 
 int main(int argc, char *argv[]) {
@@ -82,6 +82,7 @@ int main(int argc, char *argv[]) {
     return err;
 }
 
+//Lee el archivo, habria que hacer control de errores con un errorHandler o algo asi
 void readFile(const char *filename, int *err, TMV *mv) {
     FILE *arch;
     Byte header[HEADER_RANGE];
@@ -115,6 +116,8 @@ void readFile(const char *filename, int *err, TMV *mv) {
                     }
                     else {
                         initialization(mv, codeSize);
+
+                        //Carga del codigo en la memoria principal
                         if (fread(mv->mem, 1, codeSize, arch) != codeSize) {
                             fprintf(stderr, "Error leyendo el codigo\n");
                             (*err)++;
@@ -128,6 +131,7 @@ void readFile(const char *filename, int *err, TMV *mv) {
     }
 }
 
+//Armar tabla de descriptores de segmentos e inicializar registros y memoria
 void initialization(TMV *mv, TwoBytes codeSize) {
     unsigned int i;
 
@@ -149,18 +153,20 @@ void initialization(TMV *mv, TwoBytes codeSize) {
     mv->reg[IP] = mv->reg[CS];
 }
 
-//Hay que arreglar un par de cosas, lo hago mas tarde (Lucas)
+//Agarra un byte de instruccion, temp no hace falta, pero hace todo mas claro
+//Setea OPC, el tipo de OP1 y el tipo de OP2
 void fetchInstruction(TMV* mv) {
     Byte temp;
+
     temp = mv->mem[mv->reg[IP] & MASK_UNSEG];
     mv->reg[OPC] = (Register)(temp & MASKB_OPC) & MASK_OPC;
-    if ((temp & MASKB_OP1) != 0) {
-        mv->reg[OP2] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
-        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;
-    }
-    else {
-        mv->reg[OP2] = MASK_Z;
-        mv->reg[OP1] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
+
+    mv->reg[OP1] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
+    mv->reg[OP2] = 0;
+
+    if ((temp & MASKB_OP1) != 0) {              //Si hay dos operandos, mueve la OP1 a OP2 y agarra el tipo de OP1
+        mv->reg[OP2] = mv->reg[OP1];
+        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;     //Aca deberia ir una excepcion de error en caso de que el tipo sea inmediato (porque no puede serlo)
     }
 }
 
