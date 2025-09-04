@@ -108,7 +108,7 @@ void readFile(const char *filename, int *err, TMV *mv) {
                     (*err)++;
                 }
                 else {
-                    codeSize = (header[6] << 8) | header[7];
+                    codeSize = ((TwoBytes)header[6] << 8) | header[7];
                     if (codeSize >= RAM_SIZE) {
                         fprintf(stderr, "Error: el codigo es demasiado grande (%u bytes)\n", codeSize);
                         (*err)++;
@@ -149,19 +149,18 @@ void initialization(TMV *mv, TwoBytes codeSize) {
     mv->reg[IP] = mv->reg[CS];
 }
 
-//Probablemente no ande porque falta casteo ya que temp es Byte y no Register
+//Hay que arreglar un par de cosas, lo hago mas tarde (Lucas)
 void fetchInstruction(TMV* mv) {
     Byte temp;
     temp = mv->mem[mv->reg[IP] & MASK_UNSEG];
-    mv->reg[OPC] = (temp & MASKB_OPC) && MASK_OPC;
-    mv->reg[OP1] = ((temp & MASKB_OP2) << 18) && MASK_OP2;
-    if (temp & MASKB_OP1 != 0) {
-        mv->reg[OP2] = ((temp & MASKB_OP2) << 18) && MASK_OP2;
-        mv->reg[OP1] = ((temp & MASKB_OP1) << 20) && MASK_OP1;
+    mv->reg[OPC] = (Register)(temp & MASKB_OPC) & MASK_OPC;
+    if ((temp & MASKB_OP1) != 0) {
+        mv->reg[OP2] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
+        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;
     }
     else {
         mv->reg[OP2] = MASK_Z;
-        mv->reg[OP1] = ((temp & MASKB_OP2) << 18) && MASK_OP2;
+        mv->reg[OP1] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
     }
 }
 
