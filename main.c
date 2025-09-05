@@ -17,9 +17,6 @@
 #define CS_INI SEG_POS(CS_SEG)
 #define DS_INI SEG_POS(DS_SEG)
 
-#define MASK_SEG   0xFFFF0000   // Mascara para agarrar bits de segmento
-#define MASK_UNSEG 0x0000FFFF   // Mascara para quitar bits de segmento
-
 #define MASKB_OPC 0b00011111
 #define MASKB_OP1 0b00110000
 #define MASKB_OP2 0b11000000
@@ -28,16 +25,17 @@
 
 //Vector de mensajes de errores
 static const char* errorMsgs[] = {
-    NULL,                                       // índice 0 (sin error)
-    "Uso: vmx archivo.vmx [-d]\n",              // 1
-    "Error: No se pudo abrir el archivo\n",     // 2
-    "Error: Archivo muy corto\n",               // 3
-    "Error: Firma incorrecta\n",                // 4
-    "Error: Version incorrecta\n",              // 5
-    "Error: El codigo es demasiado grande\n",   // 6
-    "Error: Hay menos codigo del indicado\n",   // 7
-    "Error: IP se salio del CS\n",              // 8
-    "Error: OP1 no puede ser inmediato\n"       // 9
+    NULL,                                           // indice 0 (sin error)
+    "Uso: vmx archivo.vmx [-d]\n",                  // 1
+    "Error: No se pudo abrir el archivo\n",         // 2
+    "Error: Archivo muy corto\n",                   // 3
+    "Error: Firma incorrecta\n",                    // 4
+    "Error: Version incorrecta\n",                  // 5
+    "Error: El codigo es demasiado grande\n",       // 6
+    "Error: Hay menos codigo del indicado\n",       // 7
+    "Error: IP se salio del CS\n",                  // 8
+    "Error: OP1 no puede ser inmediato\n",          // 9
+    "Error: Fuera de los limites del segmento\n"    //10
 };
 
 //Define de registros
@@ -79,8 +77,10 @@ typedef struct {
 void errorHandler(TMV* mv, int err);
 void readFile(TMV *mv, const char *filename);
 void initialization(TMV *mv, TwoBytes codeSize);
+Register decodeAddr(TMV* mv, Register logical);
 int isIPinCS(TMV* mv);
 void fetchInstruction(TMV* mv);
+Register fetchOperand(TMV* mv, int bytes);
 void fetchOperators(TMV* mv);
 void executeProgram(TMV* mv);
 
@@ -154,6 +154,20 @@ void initialization(TMV *mv, TwoBytes codeSize) {
     mv->reg[IP] = mv->reg[CS];
 }
 
+Register decodeAddr(TMV* mv, Register logical) {
+    TwoBytes segIndex, offset;
+    TableSeg seg;
+
+    segIndex = (TwoBytes) (logical >> 16);
+    offset = (TwoBytes) logical;
+
+    seg = mv->seg[segIndex];
+    if  (offset >= seg.size)
+        errorHandler(mv, 10);
+
+    return seg.base + offset;
+}
+
 //Chequeo sobre la posicion del registro IP
 int isIPinCS(TMV* mv) {
     return mv->seg[CS_SEG].base <= mv->reg[IP] && mv->reg[IP] < (mv->seg[CS_SEG].base + mv->seg[CS_SEG].size);
@@ -164,7 +178,7 @@ int isIPinCS(TMV* mv) {
 void fetchInstruction(TMV* mv) {
     Byte temp;
 
-    temp = mv->mem[mv->reg[IP] & MASK_UNSEG];
+    temp = mv->mem[decodeAddr(mv, mv->reg[IP])];
     mv->reg[OPC] = 0;
     mv->reg[OPC] = (Register)(temp & MASKB_OPC);
 
@@ -183,9 +197,9 @@ Register fetchOperand(TMV* mv, int bytes) {
     Register temp = 0;
 
     while (bytes > 0 && mv->flag == 0) {
-        temp |= ((Register) mv->mem[mv->reg[IP] & MASK_UNSEG]) << (8 * bytes);
+        temp |= ((Register) mv->mem[decodeAddr(mv, mv->reg[IP])]) << (8 * bytes);
         mv->reg[IP]++;
-        if (!(isIPinCS(mv)))
+        if (!(isIPinCS(mv)) && mv->flag == 0)
             errorHandler(mv, 8);
         bytes--;
     }
@@ -215,6 +229,8 @@ void fetchOperators(TMV* mv) {
 
 void executeProgram(TMV* mv) {
     //Hay que agregar errores por si se salio sin stop capaz
+    //Hay que agregar que se salga si el flag != 0
+    //Capaz no hace falta la funcion, esto podria ir en main
     while (isIPinCS(mv)) {
         fetchInstruction(mv);
         fetchOperators(mv);
