@@ -15,11 +15,8 @@
 #define MASK_UNSEG 0x0000FFFF   // Mascara para quitar bits de segmento
 
 #define MASKB_OPC 0b00011111
-#define MASK_OPC  0x000000FF
 #define MASKB_OP1 0b00110000
-#define MASK_OP1  0x00FF0000
 #define MASKB_OP2 0b11000000
-#define MASK_OP2  0xFF000000
 
 #define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
 
@@ -162,15 +159,16 @@ void fetchInstruction(TMV* mv) {
     Byte temp;
 
     temp = mv->mem[mv->reg[IP] & MASK_UNSEG];
-    mv->reg[OPC] = (Register)(temp & MASKB_OPC) & MASK_OPC;
+    mv->reg[OPC] = 0;
+    mv->reg[OPC] = (Register)(temp & MASKB_OPC);
 
     mv->reg[OP1] = 0;
     mv->reg[OP2] = 0;
-    mv->reg[OP1] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
+    mv->reg[OP1] = (Register)(temp & MASKB_OP2) << 18;
 
     if ((temp & MASKB_OP1) != 0) {              //Si hay dos operandos, mueve la OP1 a OP2 y agarra el tipo de OP1
         mv->reg[OP2] = mv->reg[OP1];
-        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;
+        mv->reg[OP1] = (Register)(temp & MASKB_OP1) << 20;
     }
 }
 
@@ -179,7 +177,7 @@ Register fetchOperand(TMV* mv, int bytes) {
     Register temp = 0;
 
     while (bytes > 0 && mv->flag == 0) {
-        temp |= ((Register) mv->mem[*ip & MASK_UNSEG]) << (8 * bytes);
+        temp |= ((Register) mv->mem[mv->reg[IP] & MASK_UNSEG]) << (8 * bytes);
         mv->reg[IP]++;
         if (!(isIPinCS(mv)))
             errorHandler(mv, 8);
@@ -192,7 +190,7 @@ Register fetchOperand(TMV* mv, int bytes) {
 //Prepara a los operandos para que reciban su informacion
 void fetchOperators(TMV* mv) {
     int op1Bytes, op2Bytes;
-    
+
     mv->reg[IP]++;
     if (!(isIPinCS(mv)))
         errorHandler(mv, 8);
@@ -207,7 +205,7 @@ void fetchOperators(TMV* mv) {
                 mv->reg[OP1] |= fetchOperand(mv, op1Bytes);
         }
     }
-}    
+}
 
 void executeProgram(TMV* mv) {
     //Hay que agregar errores por si se salio sin stop capaz
