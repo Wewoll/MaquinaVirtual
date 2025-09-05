@@ -7,9 +7,15 @@
 #define REG_AMOUNT 32           // 32 registros
 #define SEG_AMOUNT 2            // 2 descriptores de segmentos
 
-#define CS_POS 0x00000000       // Primer entrada
-#define DS_POS 0x00010000       // Segunda entrada
-#define CS_SEG 0                // Valor para chequear si se esta dentro de CS
+// Indice de segmentos de la tabla de descriptores
+#define CS_SEG 0
+#define DS_SEG 1
+
+// Macros para construir la dirección logica inicial de cada segmento
+#define SEG_POS(seg) ((seg) << 16)
+
+#define CS_INI SEG_POS(CS_SEG)
+#define DS_INI SEG_POS(DS_SEG)
 
 #define MASK_SEG   0xFFFF0000   // Mascara para agarrar bits de segmento
 #define MASK_UNSEG 0x0000FFFF   // Mascara para quitar bits de segmento
@@ -143,8 +149,8 @@ void initialization(TMV *mv, TwoBytes codeSize) {
     mv->seg[1].size = RAM_SIZE - codeSize;
 
     //Inicio de las pocisiones de CS, DS e IP
-    mv->reg[CS] = CS_POS;
-    mv->reg[DS] = DS_POS;
+    mv->reg[CS] = CS_INI;
+    mv->reg[DS] = DS_INI;
     mv->reg[IP] = mv->reg[CS];
 }
 
