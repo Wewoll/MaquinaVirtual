@@ -4,4 +4,4 @@ Trabajo Practico de la asignatura "Fundamentos de la Arquitectura de Computadora
 Autores:
 - Lucas Paniagua
 - Victoria Cherepakhin
-- Agreguense
+- Nicolas Zuviria
