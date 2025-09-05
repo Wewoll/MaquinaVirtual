@@ -9,10 +9,10 @@
 
 #define CS_POS 0x00000000       // Primer entrada
 #define DS_POS 0x00010000       // Segunda entrada
+#define CS_SEG 0                // Valor para chequear si se esta dentro de CS
 
 #define MASK_SEG   0xFFFF0000   // Mascara para agarrar bits de segmento
 #define MASK_UNSEG 0x0000FFFF   // Mascara para quitar bits de segmento
-#define IN_CS      0            // Valor para chequear si se esta dentro de CS
 
 #define MASKB_OPC 0b00011111
 #define MASK_OPC  0x000000FF
@@ -22,6 +22,20 @@
 #define MASK_OP2  0xFF000000
 
 #define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
+
+//Vector de mensajes de errores
+static const char* errorMsgs[] = {
+    NULL,                                       // índice 0 (sin error)
+    "Uso: vmx archivo.vmx [-d]\n",              // 1
+    "Error: No se pudo abrir el archivo\n",     // 2
+    "Error: Archivo muy corto\n",               // 3
+    "Error: Firma incorrecta\n",                // 4
+    "Error: Version incorrecta\n",              // 5
+    "Error: El codigo es demasiado grande\n",   // 6
+    "Error: Hay menos codigo del indicado\n",   // 7
+    "Error: IP se salio del CS\n",              // 8
+    "Error: OP1 no puede ser inmediato\n"       // 9
+};
 
 //Define de registros
 typedef enum {
@@ -56,101 +70,90 @@ typedef struct {
     Byte     mem[RAM_SIZE];       // 16 KiB de RAM
     Register reg[REG_AMOUNT];     // 32 registros de 4 bytes
     TableSeg seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
+    Register flag;                // error flag
 } TMV;
 
-void readFile(const char *filename, int *err, TMV *mv);
+void errorHandler(TMV* mv, int err);
+void readFile(TMV *mv, const char *filename);
 void initialization(TMV *mv, TwoBytes codeSize);
+int isIPinCS(TMV* mv);
 void fetchInstruction(TMV* mv);
 void fetchOperators(TMV* mv);
 void executeProgram(TMV* mv);
 
 int main(int argc, char *argv[]) {
     TMV mv;
-    int err = 0;
+
+    mv.flag = 0;
 
     if (argc < 2) {
-        fprintf(stderr, "Uso: %s archivo.vmx [-d]\n", argv[0]);
-        err++;
+        errorHandler(&mv, 1);
     }
     else {
-        readFile(argv[1], &err, &mv);
-        if (err == 0) {
+        readFile(&mv, argv[1]);
+        if (mv.flag == 0) {
             executeProgram(&mv);
         }
     }
 
-    return err;
+    return mv.flag;
+}
+
+//Manejo de errores
+void errorHandler(TMV* mv, int err) {
+    mv->flag = err;
+    fprintf(stderr, "%s", errorMsgs[err]);
 }
 
 //Lee el archivo, habria que hacer control de errores con un errorHandler o algo asi
-void readFile(const char *filename, int *err, TMV *mv) {
+void readFile(TMV* mv, const char* filename) {
     FILE *arch;
     Byte header[HEADER_RANGE];
     TwoBytes codeSize;
 
     arch = fopen(filename, "rb");
-    if (arch == NULL) {
-        perror("No se pudo abrir el archivo");
-        (*err)++;
-    }
+    if (arch == NULL)
+        errorHandler(mv, 2);
     else {
-        if (fread(header, 1, 8, arch) != HEADER_RANGE) {
-            fprintf(stderr, "Error: archivo muy corto\n");
-            (*err)++;
-        }
+        if (fread(header, 1, 8, arch) != HEADER_RANGE)
+            errorHandler(mv, 3);
+        else if (memcmp(header, "VMX25", 5) != 0)
+            errorHandler(mv, 4);
+        else if (header[5] != 1)
+            errorHandler(mv, 5);
         else {
-            if (memcmp(header, "VMX25", 5) != 0) {
-                fprintf(stderr, "Error: firma incorrecta\n");
-                (*err)++;
-            }
+            codeSize = ((TwoBytes) header[6] << 8) | header[7];
+            if (codeSize >= RAM_SIZE)
+                errorHandler(mv, 6);
             else {
-                if (header[5] != 1) {
-                    fprintf(stderr, "Error: version incorrecta (%d)\n", header[5]);
-                    (*err)++;
-                }
-                else {
-                    codeSize = ((TwoBytes)header[6] << 8) | header[7];
-                    if (codeSize >= RAM_SIZE) {
-                        fprintf(stderr, "Error: el codigo es demasiado grande (%u bytes)\n", codeSize);
-                        (*err)++;
-                    }
-                    else {
-                        initialization(mv, codeSize);
-
-                        //Carga del codigo en la memoria principal
-                        if (fread(mv->mem, 1, codeSize, arch) != codeSize) {
-                            fprintf(stderr, "Error leyendo el codigo\n");
-                            (*err)++;
-                        }
-                    }
-                }
+                //Carga del codigo en la memoria principal
+                if (fread(mv->mem, 1, codeSize, arch) != codeSize)
+                    errorHandler(mv, 7);
+                initialization(mv, codeSize);
             }
         }
-
         fclose(arch);
     }
 }
 
+
 //Armar tabla de descriptores de segmentos e inicializar registros y memoria
 void initialization(TMV *mv, TwoBytes codeSize) {
-    unsigned int i;
-
     //Inicio de la tabla de descriptores de segmentos
     mv->seg[0].base = 0;
     mv->seg[0].size = codeSize;
     mv->seg[1].base = codeSize;
     mv->seg[1].size = RAM_SIZE - codeSize;
 
-    //Inicio de la memoria y los registros
-    for (i = 0; i < RAM_SIZE; i++)
-        mv->mem[i] = 0;
-    for (i = 0; i < REG_AMOUNT; i++)
-        mv->reg[i] = 0;
-
     //Inicio de las pocisiones de CS, DS e IP
     mv->reg[CS] = CS_POS;
     mv->reg[DS] = DS_POS;
     mv->reg[IP] = mv->reg[CS];
+}
+
+//Chequeo sobre la posicion del registro IP
+int isIPinCS(TMV* mv) {
+    return mv->seg[CS_SEG].base <= mv->reg[IP] && mv->reg[IP] < (mv->seg[CS_SEG].base + mv->seg[CS_SEG].size);
 }
 
 //Agarra un byte de instruccion, temp no hace falta, pero hace todo mas claro
@@ -161,34 +164,54 @@ void fetchInstruction(TMV* mv) {
     temp = mv->mem[mv->reg[IP] & MASK_UNSEG];
     mv->reg[OPC] = (Register)(temp & MASKB_OPC) & MASK_OPC;
 
-    mv->reg[OP1] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
+    mv->reg[OP1] = 0;
     mv->reg[OP2] = 0;
+    mv->reg[OP1] = ((Register)(temp & MASKB_OP2) << 18) & MASK_OP2;
 
     if ((temp & MASKB_OP1) != 0) {              //Si hay dos operandos, mueve la OP1 a OP2 y agarra el tipo de OP1
         mv->reg[OP2] = mv->reg[OP1];
-        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;     //Aca deberia ir una excepcion de error en caso de que el tipo sea inmediato (porque no puede serlo) o capaz podria estar en fetchOperator
+        mv->reg[OP1] = ((Register)(temp & MASKB_OP1) << 20) & MASK_OP1;
     }
 }
 
-//Capaz me salgo de la memoria, revisar mas tarde
-//Falta para OP2 (seria lo mismo que OP1)
-void fetchOperators(TMV* mv) {
-    Register temp;
-    int i;
+//Crea un registro y lo devuelve a los operandos
+Register fetchOperand(TMV* mv, int bytes) {
+    Register temp = 0;
 
-    mv->reg[IP]++;
-
-    temp = 0;
-    i = mv->reg[OP1] >> 24;
-    for (; i > 0; i--) {
-        temp |= ((Register)mv->mem[mv->reg[IP] & MASK_UNSEG]) << (8 * i);
+    while (bytes > 0 && mv->flag == 0) {
+        temp |= ((Register) mv->mem[*ip & MASK_UNSEG]) << (8 * bytes);
         mv->reg[IP]++;
+        if (!(isIPinCS(mv)))
+            errorHandler(mv, 8);
+        bytes--;
     }
-    mv->reg[OP1] = mv->reg[OP1] | temp;
+
+    return temp;
 }
+
+//Prepara a los operandos para que reciban su informacion
+void fetchOperators(TMV* mv) {
+    int op1Bytes, op2Bytes;
+    
+    mv->reg[IP]++;
+    if (!(isIPinCS(mv)))
+        errorHandler(mv, 8);
+    else {
+        op2Bytes = mv->reg[OP2] >> 24;
+        op1Bytes = mv->reg[OP1] >> 24;
+        if (op1Bytes == 2)
+            errorHandler(mv, 9);
+        else {
+            mv->reg[OP2] |= fetchOperand(mv, op2Bytes);
+            if (mv->flag == 0)
+                mv->reg[OP1] |= fetchOperand(mv, op1Bytes);
+        }
+    }
+}    
 
 void executeProgram(TMV* mv) {
-    while ((mv->reg[IP] & MASK_SEG) >> 16 == IN_CS) {
+    //Hay que agregar errores por si se salio sin stop capaz
+    while (isIPinCS(mv)) {
         fetchInstruction(mv);
         fetchOperators(mv);
     }
