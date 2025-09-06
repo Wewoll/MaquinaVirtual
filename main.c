@@ -57,7 +57,7 @@ typedef enum {
 typedef enum {
     SYS = 0x00, JMP, JZ, JP, JN, JNZ, JNP, JNN, NOT,
     STOP = 0x0F,
-    MOV = 0x10, ADD, SUB, res, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
+    MOV = 0x10, ADD, SUB, MUL, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
 } OpCode;
 
 //Tamanos usados
@@ -324,7 +324,7 @@ void fsub(TMV* mv) {
 }
 
 //Instruccion MUL
-void fres(TMV* mv) {
+void fmul(TMV* mv) {
     Register res;
     res = getOP(mv, mv->reg[OP1]) * getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
@@ -395,8 +395,8 @@ void executeProgram(TMV* mv) {
                     fsub(mv);
                     break;
 
-                case res:
-                    fres(mv);
+                case MUL:
+                    fmul(mv);
                     break;
 
                 case DIV:
