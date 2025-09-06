@@ -248,27 +248,27 @@ void executeProgram(TMV* mv) {
             switch (mv->reg[OPC]) {
                 case MOV:
                     // Copia el valor del registro OP2 al registro OP1
-                    mv->reg[mv->reg[OP1] & 0xFF] = mv->reg[mv->reg[OP2] & 0xFF];
+                    mv->reg[mv->reg[OP1]] = mv->reg[mv->reg[OP2]];
                     break;
 
                 case ADD:
                     // Suma el contenido de OP2 al registro OP1
-                    mv->reg[mv->reg[OP1] & 0xFF] += mv->reg[mv->reg[OP2] & 0xFF];
+                    mv->reg[mv->reg[OP1]] += mv->reg[mv->reg[OP2]];
                     break;
 
                 case SUB:
                     // Resta el contenido de OP2 al registro OP1
-                    mv->reg[mv->reg[OP1] & 0xFF] -= mv->reg[mv->reg[OP2] & 0xFF];
+                    mv->reg[mv->reg[OP1]] -= mv->reg[mv->reg[OP2]];
                     break;
 
                 case MUL:
                     // Multiplica el contenido de OP1 por el de OP2
-                    mv->reg[mv->reg[OP1] & 0xFF] *= mv->reg[mv->reg[OP2] & 0xFF];
+                    mv->reg[mv->reg[OP1]] *= mv->reg[mv->reg[OP2]];
                     break;
 
                 case DIV: {
-                    int dividendo = mv->reg[OP1] & 0xFF;  
-                    int divisor = mv->reg[OP2] & 0xFF;   
+                    int dividendo = mv->reg[OP1];  
+                    int divisor = mv->reg[OP2];   
 
                     if (mv->reg[divisor] == 0) {
                         // error si divisor = 0
@@ -284,22 +284,22 @@ void executeProgram(TMV* mv) {
 
                 case AND:
                     // Hace un AND entre OP1 y OP2 y guarda en OP1
-                    mv->reg[mv->reg[OP1] & 0xFF] &= mv->reg[mv->reg[OP2] & 0xFF];
+                    mv->reg[mv->reg[OP1]] &= mv->reg[mv->reg[OP2]];
                     break;
 
                 case OR:
                     // Hace un OR entre OP1 y OP2 y guarda en OP1
-                    mv->reg[mv->reg[OP1] & 0xFF] |= mv->reg[mv->reg[OP2] & 0xFF];
+                    mv->reg[mv->reg[OP1]] |= mv->reg[mv->reg[OP2]];
                     break;
 
                 case XOR:
                     // Hace un XOR entre OP1 y OP2 y guarda en OP1
-                    mv->reg[mv->reg[OP1] & 0xFF] ^= mv->reg[mv->reg[OP2] & 0xFF];
+                    mv->reg[mv->reg[OP1]] ^= mv->reg[mv->reg[OP2]];
                     break;
 
                 case NOT:
                     // Niega todos los bits del registro OP1
-                    mv->reg[mv->reg[OP1] & 0xFF] = ~ mv->reg[mv->reg[OP1] & 0xFF];
+                    mv->reg[mv->reg[OP1]] = ~ mv->reg[mv->reg[OP1]];
                     break;
 
                 // Falta que las instrucciones modifiquen al registro CC
