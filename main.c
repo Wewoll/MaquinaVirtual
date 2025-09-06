@@ -231,8 +231,87 @@ void executeProgram(TMV* mv) {
     //Hay que agregar errores por si se salio sin stop capaz
     //Hay que agregar que se salga si el flag != 0
     //Capaz no hace falta la funcion, esto podria ir en main
-    while (isIPinCS(mv)) {
+
+    int stop = 0;
+
+    while (!stop && mv->flag == 0 && isIPinCS(mv)) {
         fetchInstruction(mv);
-        fetchOperators(mv);
+
+        if (mv->reg[OPC] == STOP) {   // Si la instrucción es STOP → fin del programa
+            mv->reg[IP]++;            // Avanza IP
+            if (!isIPinCS(mv)) errorHandler(mv, 8); // Valida IP dentro de CS
+            stop = 1;
+        }
+        else{
+            fetchOperators(mv);
+
+            switch (mv->reg[OPC]) {
+                case MOV:
+                    // Copia el valor del registro OP2 al registro OP1
+                    mv->reg[mv->reg[OP1] & 0xFF] = mv->reg[mv->reg[OP2] & 0xFF];
+                    break;
+
+                case ADD:
+                    // Suma el contenido de OP2 al registro OP1
+                    mv->reg[mv->reg[OP1] & 0xFF] += mv->reg[mv->reg[OP2] & 0xFF];
+                    break;
+
+                case SUB:
+                    // Resta el contenido de OP2 al registro OP1
+                    mv->reg[mv->reg[OP1] & 0xFF] -= mv->reg[mv->reg[OP2] & 0xFF];
+                    break;
+
+                case MUL:
+                    // Multiplica el contenido de OP1 por el de OP2
+                    mv->reg[mv->reg[OP1] & 0xFF] *= mv->reg[mv->reg[OP2] & 0xFF];
+                    break;
+
+                case DIV: {
+                    int dividendo = mv->reg[OP1] & 0xFF;  
+                    int divisor = mv->reg[OP2] & 0xFF;   
+
+                    if (mv->reg[divisor] == 0) {
+                        // error si divisor = 0
+                    } else {
+                        Register q = mv->reg[dividendo] / mv->reg[divisor];  // cociente
+                        Register r = mv->reg[dividendo] % mv->reg[divisor];  // resto
+
+                        mv->reg[dividendo] = q;       
+                        mv->reg[AC] = r;         
+                    }
+                    break;
+                }
+
+                case AND:
+                    // Hace un AND entre OP1 y OP2 y guarda en OP1
+                    mv->reg[mv->reg[OP1] & 0xFF] &= mv->reg[mv->reg[OP2] & 0xFF];
+                    break;
+
+                case OR:
+                    // Hace un OR entre OP1 y OP2 y guarda en OP1
+                    mv->reg[mv->reg[OP1] & 0xFF] |= mv->reg[mv->reg[OP2] & 0xFF];
+                    break;
+
+                case XOR:
+                    // Hace un XOR entre OP1 y OP2 y guarda en OP1
+                    mv->reg[mv->reg[OP1] & 0xFF] ^= mv->reg[mv->reg[OP2] & 0xFF];
+                    break;
+
+                case NOT:
+                    // Niega todos los bits del registro OP1
+                    mv->reg[mv->reg[OP1] & 0xFF] = ~ mv->reg[mv->reg[OP1] & 0xFF];
+                    break;
+
+                // Falta que las instrucciones modifiquen al registro CC
+                // Faltan los errorHandler
+                /* 
+                Instrucciones que faltan con...
+                    2 operandos: CMP, JMP, JZ, SHL, SHR, SAR, SWAP, LDH, LDL, RND
+                    1 op: SYS, JMP, JZ, JP, JN, JNZ, JNP, JNN
+                */ 
+                default:
+                    // Error por OPC inválido
+            }
+        }
     }
 }
