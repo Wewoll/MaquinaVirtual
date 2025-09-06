@@ -197,7 +197,7 @@ Register fetchOperand(TMV* mv, int bytes) {
     Register temp = 0;
 
     while (bytes > 0 && mv->flag == 0) {
-        temp |= ((Register) mv->mem[decodeAddr(mv, mv->reg[IP])]) << (8 * bytes);
+        temp |= ((Register) mv->mem[decodeAddr(mv, mv->reg[IP])]) << (8 * (bytes - 1));
         mv->reg[IP]++;
         if (!(isIPinCS(mv)) && mv->flag == 0)
             errorHandler(mv, 8);
