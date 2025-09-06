@@ -23,6 +23,11 @@
 
 #define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
 
+#define STOP_VALUE 0xFFFFFFFF
+
+#define CC_N 0x80000000
+#define CC_Z 0x40000000
+
 //Vector de mensajes de errores
 static const char* errorMsgs[] = {
     NULL,                                           // indice 0 (sin error)
@@ -52,7 +57,7 @@ typedef enum {
 typedef enum {
     SYS = 0x00, JMP, JZ, JP, JN, JNZ, JNP, JNN, NOT,
     STOP = 0x0F,
-    MOV = 0x10, ADD, SUB, MUL, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
+    MOV = 0x10, ADD, SUB, res, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
 } OpCode;
 
 //Tamanos usados
@@ -82,7 +87,14 @@ int isIPinCS(TMV* mv);
 void fetchInstruction(TMV* mv);
 Register fetchOperand(TMV* mv, int bytes);
 void fetchOperators(TMV* mv);
+
+Register getOP(TMV* mv, Register operand);
+void setOP(TMV* mv, Register operandA, Register operandB);
+void fmov(TMV* mv);
+void fstop(TMV* mv);
 void executeProgram(TMV* mv);
+
+
 
 int main(int argc, char *argv[]) {
     TMV mv;
@@ -154,6 +166,7 @@ void initialization(TMV *mv, TwoBytes codeSize) {
     mv->reg[IP] = mv->reg[CS];
 }
 
+//Decodificador de direccion logica a direccion fisica
 Register decodeAddr(TMV* mv, Register logical) {
     TwoBytes segIndex, offset;
     TableSeg seg;
@@ -225,6 +238,130 @@ void fetchOperators(TMV* mv) {
                 mv->reg[OP1] |= fetchOperand(mv, op1Bytes);
         }
     }
+    fprintf(stderr, "%x %x\n", mv->reg[OP1], mv->reg[OP2]);
+}
+
+Register getOP(TMV* mv, Register operand) {
+    Byte tipo = operand >> 24;
+    Register res;
+
+    operand &= 0x00FFFFFF;
+
+    switch (tipo) {
+        case 1:
+            res = mv->reg[operand];
+            break;
+        case 2:
+            //falta extension de signo
+            res = operand;
+            break;
+        case 3:
+            //LAR, MAR, MBR
+            // MBR = valor;
+            // LAR = registro + offset
+            // mar = decodeAdr(LAR)
+            // mar = cargaAlta
+            break;
+    }
+
+    return res;
+}
+
+void setOP(TMV* mv, Register operandA, Register operandB) {
+    Byte tipo = operandA >> 24;
+
+    operandA &= 0x00FFFFFF;
+    switch (tipo) {
+        case 1:
+            mv->reg[operandA] = operandB;
+            break;
+        case 3:
+            //Memoria
+            break;
+    }
+}
+
+void setCC(TMV* mv, Register valor) {
+    if (valor < 0)
+        mv->reg[CC] = CC_N;
+    else if (valor == 0)
+        mv->reg[CC] = CC_Z;
+}
+
+//Instruccion NOT bit a bit
+void fnot(TMV* mv) {
+    Register res;
+    res = ~ getOP(mv, mv->reg[OP1]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Instruccion STOP
+//Arreglar que error que tira
+void fstop(TMV* mv) {
+    mv->reg[IP] = STOP_VALUE;
+}
+
+//Instruccion MOV
+void fmov(TMV* mv) {
+    setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
+}
+
+//Instruccion ADD
+void fadd(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) + getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Instruccion SUB
+void fsub(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) - getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Instruccion MUL
+void fres(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) * getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Instruccion DIV
+void fdiv(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) / getOP(mv, mv->reg[OP2]);
+    mv->reg[AC] = getOP(mv, mv->reg[OP1]) % getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Instruccion AND bit a bit
+void fand(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) & getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Instruccion OR bit a bit
+void f_or(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) | getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Instruccion XOR bit a bit
+void fxor(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) ^ getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
 }
 
 void executeProgram(TMV* mv) {
@@ -232,84 +369,60 @@ void executeProgram(TMV* mv) {
     //Hay que agregar que se salga si el flag != 0
     //Capaz no hace falta la funcion, esto podria ir en main
 
-    int stop = 0;
-
-    while (!stop && mv->flag == 0 && isIPinCS(mv)) {
+    while (mv->flag == 0 && isIPinCS(mv)) {
         fetchInstruction(mv);
+        fetchOperators(mv);
 
-        if (mv->reg[OPC] == STOP) {   // Si la instrucción es STOP → fin del programa
-            mv->reg[IP]++;            // Avanza IP
-            if (!isIPinCS(mv)) errorHandler(mv, 8); // Valida IP dentro de CS
-            stop = 1;
-        }
-        else{
-            fetchOperators(mv);
-
+        if(mv->flag == 0) {
             switch (mv->reg[OPC]) {
+                case NOT:
+                    fnot(mv);
+                    break;
+
+                case STOP:
+                    fstop(mv);
+                    break;
+
                 case MOV:
-                    // Copia el valor del registro OP2 al registro OP1
-                    mv->reg[mv->reg[OP1]] = mv->reg[mv->reg[OP2]];
+                    fmov(mv);
                     break;
 
                 case ADD:
-                    // Suma el contenido de OP2 al registro OP1
-                    mv->reg[mv->reg[OP1]] += mv->reg[mv->reg[OP2]];
+                    fadd(mv);
                     break;
 
                 case SUB:
-                    // Resta el contenido de OP2 al registro OP1
-                    mv->reg[mv->reg[OP1]] -= mv->reg[mv->reg[OP2]];
+                    fsub(mv);
                     break;
 
-                case MUL:
-                    // Multiplica el contenido de OP1 por el de OP2
-                    mv->reg[mv->reg[OP1]] *= mv->reg[mv->reg[OP2]];
+                case res:
+                    fres(mv);
                     break;
 
-                case DIV: {
-                    int dividendo = mv->reg[OP1];  
-                    int divisor = mv->reg[OP2];   
-
-                    if (mv->reg[divisor] == 0) {
-                        // error si divisor = 0
-                    } else {
-                        Register q = mv->reg[dividendo] / mv->reg[divisor];  // cociente
-                        Register r = mv->reg[dividendo] % mv->reg[divisor];  // resto
-
-                        mv->reg[dividendo] = q;       
-                        mv->reg[AC] = r;         
-                    }
+                case DIV:
+                    fdiv(mv);
                     break;
-                }
 
                 case AND:
-                    // Hace un AND entre OP1 y OP2 y guarda en OP1
-                    mv->reg[mv->reg[OP1]] &= mv->reg[mv->reg[OP2]];
+                    fand(mv);
                     break;
 
                 case OR:
-                    // Hace un OR entre OP1 y OP2 y guarda en OP1
-                    mv->reg[mv->reg[OP1]] |= mv->reg[mv->reg[OP2]];
+                    f_or(mv);
                     break;
 
                 case XOR:
-                    // Hace un XOR entre OP1 y OP2 y guarda en OP1
-                    mv->reg[mv->reg[OP1]] ^= mv->reg[mv->reg[OP2]];
-                    break;
-
-                case NOT:
-                    // Niega todos los bits del registro OP1
-                    mv->reg[mv->reg[OP1]] = ~ mv->reg[mv->reg[OP1]];
+                    fxor(mv);
                     break;
 
                 // Falta que las instrucciones modifiquen al registro CC
                 // Faltan los errorHandler
-                /* 
+                /*
                 Instrucciones que faltan con...
                     2 operandos: CMP, JMP, JZ, SHL, SHR, SAR, SWAP, LDH, LDL, RND
                     1 op: SYS, JMP, JZ, JP, JN, JNZ, JNP, JNN
-                */ 
-                default:
+                */
+                default: break;
                     // Error por OPC inválido
             }
         }
