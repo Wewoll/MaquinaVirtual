@@ -7,6 +7,8 @@
 #define REG_AMOUNT 32           // 32 registros
 #define SEG_AMOUNT 2            // 2 descriptores de segmentos
 
+#define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
+
 // Indice de segmentos de la tabla de descriptores
 #define CS_SEG 0
 #define DS_SEG 1
@@ -21,7 +23,10 @@
 #define MASKB_OP1 0b00110000
 #define MASKB_OP2 0b11000000
 
-#define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
+#define MASK_SEG    0xFFFF0000
+#define MASK_UNTYPE 0x00FFFFFF
+#define MASK_REG    0x00FF0000
+#define MASK_OFFSET 0x0000FFFF
 
 #define STOP_VALUE 0xFFFFFFFF
 
@@ -75,9 +80,9 @@ typedef enum {
 } OpCode;
 
 //Tamanos usados
-typedef uint8_t Byte;
-typedef uint16_t TwoBytes;
-typedef uint32_t Register;
+typedef int8_t Byte;
+typedef int16_t TwoBytes;
+typedef int32_t Register;
 
 //Tabla de descriptores de segmentos
 typedef struct {
@@ -97,11 +102,15 @@ void errorHandler(TMV* mv, int err);
 void readFile(TMV *mv, const char *filename);
 void initialization(TMV *mv, TwoBytes codeSize);
 Register decodeAddr(TMV* mv, Register logical);
+int inSegment(TMV* mv, Register logical);
 int inCS(TMV* mv, Register logical);
+int inDS(TMV* mv, Register logical);
 void fetchInstruction(TMV* mv);
 Register fetchOperand(TMV* mv, int bytes, int* offset);
 void fetchOperators(TMV* mv);
 
+void setLAR(TMV* mv, Register operand);
+void setMAR(TMV* mv, Register cantBytes, Register logical);
 Register getOP(TMV* mv, Register operand);
 void setOP(TMV* mv, Register operandA, Register operandB);
 void fmov(TMV* mv);
@@ -165,13 +174,13 @@ void readFile(TMV* mv, const char* filename) {
 }
 
 
-//Armar tabla de descriptores de segmentos e inicializar registros y memoria
+//Armar tabla de descriptores de segmentos e inicializar registros CS, DS, IP
 void initialization(TMV *mv, TwoBytes codeSize) {
     //Inicio de la tabla de descriptores de segmentos
-    mv->seg[0].base = 0;
-    mv->seg[0].size = codeSize;
-    mv->seg[1].base = codeSize;
-    mv->seg[1].size = RAM_SIZE - codeSize;
+    mv->seg[CS_SEG].base = 0;
+    mv->seg[CS_SEG].size = codeSize;
+    mv->seg[DS_SEG].base = codeSize;
+    mv->seg[DS_SEG].size = RAM_SIZE - codeSize;
 
     //Inicio de las pocisiones de CS, DS e IP
     mv->reg[CS] = CS_INI;
@@ -182,21 +191,34 @@ void initialization(TMV *mv, TwoBytes codeSize) {
 //Decodificador de direccion logica a direccion fisica
 Register decodeAddr(TMV* mv, Register logical) {
     TwoBytes segIndex, offset;
-    TableSeg seg;
 
     segIndex = (TwoBytes) (logical >> 16);
     offset = (TwoBytes) logical;
 
-    seg = mv->seg[segIndex];
-    if  (offset >= seg.size)
+    if (offset >= mv->seg[segIndex].size)
         errorHandler(mv, ERR_SEG);
 
-    return seg.base + offset;
+    return mv->seg[segIndex].base + offset;
 }
 
-//Chequeo sobre la posicion del registro IP
+// Verifica si una dirección logica esta dentro de su segmento
+int inSegment(TMV* mv, Register logical) {
+    TwoBytes segIndex, offset;
+
+    segIndex = (TwoBytes) (logical >> 16);
+    offset = (TwoBytes) logical;
+
+    return offset < mv->seg[segIndex].size;
+}
+
+// Verifica si una dirección lógica está en CS
 int inCS(TMV* mv, Register logical) {
-    return mv->seg[CS_SEG].base <= logical && logical < (mv->seg[CS_SEG].base + mv->seg[CS_SEG].size);
+    return ((logical >> 16) == CS_SEG) && inSegment(mv, logical);
+}
+
+// Verifica si una dirección lógica está en DS
+int inDS(TMV* mv, Register logical) {
+    return ((logical >> 16) == DS_SEG) && inSegment(mv, logical);
 }
 
 //Agarra un byte de instruccion, temp no hace falta, pero hace todo mas claro
@@ -248,11 +270,38 @@ void fetchOperators(TMV* mv) {
     }
 }
 
+//Seteo del valor del LAR cuando se trabaja con memoria
+void setLAR(TMV* mv, Register operand) {
+    Byte cod;
+    TwoBytes offset;
+    Register logical;
+
+    cod = (Byte) ((operand & MASK_REG) >> 16);
+    offset = (TwoBytes) (operand & MASK_OFFSET);
+    logical = ((Register) cod << 16) | offset;
+
+    if (!inSegment(mv, logical))
+        errorHandler(mv, ERR_SEG);
+    mv->reg[LAR] = logical;
+}
+
+//Seteo del valor del MAR cuando se trabaja con memoria
+void setMAR(TMV* mv, Register cantBytes, Register logical) {
+    Register physical;
+
+    if (mv->flag == 0) {
+        cantBytes <<= 16;
+        physical = decodeAddr(mv, logical);
+        mv->reg[MAR] = cantBytes | physical;
+    }
+}
+
+//Decodificar el operador y devolver su valor
 Register getOP(TMV* mv, Register operand) {
     Byte tipo = operand >> 24;
     Register res;
 
-    operand &= 0x00FFFFFF;
+    operand &= MASK_UNTYPE;
 
     switch (tipo) {
         case 1:
@@ -263,21 +312,20 @@ Register getOP(TMV* mv, Register operand) {
             res = operand;
             break;
         case 3:
-            //LAR, MAR, MBR
-            // MBR = valor;
-            // LAR = registro + offset
-            // mar = decodeAdr(LAR)
-            // mar = cargaAlta
+            setLAR(mv, operand);
+            setMAR(mv, 4, mv->reg[LAR]);
+            mv->reg[MBR] = mv->mem[mv->reg[MAR]];
             break;
     }
 
     return res;
 }
 
+//Setear el registro o memoria de operadorA con el valor de operadorB
 void setOP(TMV* mv, Register operandA, Register operandB) {
     Byte tipo = operandA >> 24;
 
-    operandA &= 0x00FFFFFF;
+    operandA &= MASK_UNTYPE;
     switch (tipo) {
         case 1:
             mv->reg[operandA] = operandB;
@@ -288,6 +336,7 @@ void setOP(TMV* mv, Register operandA, Register operandB) {
     }
 }
 
+//Setear el CC
 void setCC(TMV* mv, Register valor) {
     if (valor < 0)
         mv->reg[CC] = CC_N;
@@ -304,7 +353,6 @@ void fnot(TMV* mv) {
 }
 
 //Instruccion STOP
-//Arreglar que error que tira
 void fstop(TMV* mv) {
     mv->reg[IP] = STOP_VALUE;
 }
