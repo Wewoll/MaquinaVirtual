@@ -28,6 +28,20 @@
 #define CC_N 0x80000000
 #define CC_Z 0x40000000
 
+//Define de error
+typedef enum {
+    ERR_EXE = 1,
+    ERR_FOPEN,
+    ERR_ARCHSIZE,
+    ERR_ARCHID,
+    ERR_ARCHVER,
+    ERR_CODSIZE,
+    ERR_SEG,
+    ERR_INS,
+    ERR_OP1,
+    ERR_DIV0,
+} ErrNumber;
+
 //Vector de mensajes de errores
 static const char* errorMsgs[] = {
     NULL,                                           // indice 0 (sin error)
@@ -37,9 +51,10 @@ static const char* errorMsgs[] = {
     "Error: Firma incorrecta\n",                    // 4
     "Error: Version incorrecta\n",                  // 5
     "Error: El codigo es demasiado grande\n",       // 6
-    "Error: Hay menos codigo del indicado\n",       // 7
-    "Error: Fuera de los limites del segmento\n",   // 8
+    "Error: Fuera de los limites del segmento\n",   // 7 - pedido en el pdf
+    "Error: Intruccion invalida\n",                 // 8 - pedido en el pdf
     "Error: OP1 no puede ser inmediato\n",          // 9
+    "Error: No se puede dividir por 0\n"            // 10 - pedido en el pdf
 };
 
 //Define de registros
@@ -101,7 +116,7 @@ int main(int argc, char *argv[]) {
     mv.flag = 0;
 
     if (argc < 2) {
-        errorHandler(&mv, 1);
+        errorHandler(&mv, ERR_EXE);
     }
     else {
         readFile(&mv, argv[1]);
@@ -119,7 +134,7 @@ void errorHandler(TMV* mv, int err) {
     fprintf(stderr, "%s", errorMsgs[err]);
 }
 
-//Lee el archivo, habria que hacer control de errores con un errorHandler o algo asi
+//Lee el archivo
 void readFile(TMV* mv, const char* filename) {
     FILE *arch;
     Byte header[HEADER_RANGE];
@@ -127,22 +142,21 @@ void readFile(TMV* mv, const char* filename) {
 
     arch = fopen(filename, "rb");
     if (arch == NULL)
-        errorHandler(mv, 2);
+        errorHandler(mv, ERR_FOPEN);
     else {
         if (fread(header, 1, 8, arch) != HEADER_RANGE)
-            errorHandler(mv, 3);
+            errorHandler(mv, ERR_ARCHSIZE);
         else if (memcmp(header, "VMX25", 5) != 0)
-            errorHandler(mv, 4);
+            errorHandler(mv, ERR_ARCHID);
         else if (header[5] != 1)
-            errorHandler(mv, 5);
+            errorHandler(mv, ERR_ARCHVER);
         else {
             codeSize = ((TwoBytes) header[6] << 8) | header[7];
             if (codeSize >= RAM_SIZE)
-                errorHandler(mv, 6);
+                errorHandler(mv, ERR_CODSIZE);
             else {
-                //Carga del codigo en la memoria principal
-                if (fread(mv->mem, 1, codeSize, arch) != codeSize)
-                    errorHandler(mv, 7);
+                //Carga del codigo en la memoria principal e inicializar
+                fread(mv->mem, 1, codeSize, arch);
                 initialization(mv, codeSize);
             }
         }
@@ -175,7 +189,7 @@ Register decodeAddr(TMV* mv, Register logical) {
 
     seg = mv->seg[segIndex];
     if  (offset >= seg.size)
-        errorHandler(mv, 8);
+        errorHandler(mv, ERR_SEG);
 
     return seg.base + offset;
 }
@@ -212,7 +226,7 @@ Register fetchOperand(TMV* mv, int bytes, int* offset) {
         temp |= ((Register) mv->mem[decodeAddr(mv, mv->reg[IP] + (*offset))]) << (8 * (bytes - 1));
         ++(*offset);
         if (!(inCS(mv, mv->reg[IP] + (*offset))) && mv->flag == 0)
-            errorHandler(mv, 8);
+            errorHandler(mv, ERR_SEG);
         bytes--;
     }
 
@@ -226,7 +240,7 @@ void fetchOperators(TMV* mv) {
     op2Bytes = mv->reg[OP2] >> 24;
     op1Bytes = mv->reg[OP1] >> 24;
     if (op1Bytes == 2)
-        errorHandler(mv, 9);
+        errorHandler(mv, ERR_OP1);
     else {
         mv->reg[OP2] |= fetchOperand(mv, op2Bytes, &offset);
         if (mv->flag == 0)
@@ -327,10 +341,14 @@ void fmul(TMV* mv) {
 //Instruccion DIV
 void fdiv(TMV* mv) {
     Register res;
-    res = getOP(mv, mv->reg[OP1]) / getOP(mv, mv->reg[OP2]);
-    mv->reg[AC] = getOP(mv, mv->reg[OP1]) % getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+    if (getOP(mv, mv->reg[OP2]) == 0)
+        errorHandler(mv, ERR_DIV0);
+    else {
+        res = getOP(mv, mv->reg[OP1]) / getOP(mv, mv->reg[OP2]);
+        mv->reg[AC] = getOP(mv, mv->reg[OP1]) % getOP(mv, mv->reg[OP2]);
+        setCC(mv, res);
+        setOP(mv, mv->reg[OP1], res);
+    }
 }
 
 //Instruccion AND bit a bit
@@ -414,8 +432,9 @@ void executeProgram(TMV* mv) {
                         2 operandos: CMP, JMP, JZ, SHL, SHR, SAR, SWAP, LDH, LDL, RND
                         1 op: SYS, JMP, JZ, JP, JN, JNZ, JNP, JNN
                     */
-                    default: break;
-                        // Error por OPC inválido
+                    default:
+                        errorHandler(mv, ERR_INS);
+                        break;
                 }
                 mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
             }
@@ -423,5 +442,5 @@ void executeProgram(TMV* mv) {
     }
 
     if (!(inCS(mv, mv->reg[IP] && mv->reg[OPC] != STOP)))
-        errorHandler(mv, 8);
+        errorHandler(mv, ERR_SEG);
 }
