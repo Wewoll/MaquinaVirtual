@@ -310,7 +310,7 @@ void setMAR(TMV* mv, Register cantBytes, Register logical) {
         physical = decodeAddr(mv, logical);
         if (physical + cantBytes - 1 >= RAM_SIZE)
             errorHandler(mv, ERR_SEG);
-        else 
+        else
             mv->reg[MAR] = (cantBytes << 16) | physical;
     }
 }
@@ -423,12 +423,13 @@ void fadd(TMV* mv) {
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion SUB
+//Instruccion SUB (y CMP)
 void fsub(TMV* mv) {
     Register res;
     res = getOP(mv, mv->reg[OP1]) - getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+    if (mv->reg[OPC] == SUB)
+        setOP(mv, mv->reg[OP1], res);
 }
 
 //Instruccion MUL
@@ -512,6 +513,10 @@ void executeProgram(TMV* mv) {
 
                     case DIV:
                         fdiv(mv);
+                        break;
+
+                    case CMP:
+                        fsub(mv);
                         break;
 
                     case AND:
