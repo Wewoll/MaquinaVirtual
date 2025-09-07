@@ -38,9 +38,8 @@ static const char* errorMsgs[] = {
     "Error: Version incorrecta\n",                  // 5
     "Error: El codigo es demasiado grande\n",       // 6
     "Error: Hay menos codigo del indicado\n",       // 7
-    "Error: IP se salio del CS\n",                  // 8
+    "Error: Fuera de los limites del segmento\n",   // 8
     "Error: OP1 no puede ser inmediato\n",          // 9
-    "Error: Fuera de los limites del segmento\n"    //10
 };
 
 //Define de registros
@@ -83,9 +82,9 @@ void errorHandler(TMV* mv, int err);
 void readFile(TMV *mv, const char *filename);
 void initialization(TMV *mv, TwoBytes codeSize);
 Register decodeAddr(TMV* mv, Register logical);
-int isIPinCS(TMV* mv);
+int inCS(TMV* mv, Register logical);
 void fetchInstruction(TMV* mv);
-Register fetchOperand(TMV* mv, int bytes);
+Register fetchOperand(TMV* mv, int bytes, int* offset);
 void fetchOperators(TMV* mv);
 
 Register getOP(TMV* mv, Register operand);
@@ -176,14 +175,14 @@ Register decodeAddr(TMV* mv, Register logical) {
 
     seg = mv->seg[segIndex];
     if  (offset >= seg.size)
-        errorHandler(mv, 10);
+        errorHandler(mv, 8);
 
     return seg.base + offset;
 }
 
 //Chequeo sobre la posicion del registro IP
-int isIPinCS(TMV* mv) {
-    return mv->seg[CS_SEG].base <= mv->reg[IP] && mv->reg[IP] < (mv->seg[CS_SEG].base + mv->seg[CS_SEG].size);
+int inCS(TMV* mv, Register logical) {
+    return mv->seg[CS_SEG].base <= logical && logical < (mv->seg[CS_SEG].base + mv->seg[CS_SEG].size);
 }
 
 //Agarra un byte de instruccion, temp no hace falta, pero hace todo mas claro
@@ -206,13 +205,13 @@ void fetchInstruction(TMV* mv) {
 }
 
 //Crea un registro y lo devuelve a los operandos
-Register fetchOperand(TMV* mv, int bytes) {
+Register fetchOperand(TMV* mv, int bytes, int* offset) {
     Register temp = 0;
 
     while (bytes > 0 && mv->flag == 0) {
-        temp |= ((Register) mv->mem[decodeAddr(mv, mv->reg[IP])]) << (8 * (bytes - 1));
-        mv->reg[IP]++;
-        if (!(isIPinCS(mv)) && mv->flag == 0)
+        temp |= ((Register) mv->mem[decodeAddr(mv, mv->reg[IP] + (*offset))]) << (8 * (bytes - 1));
+        ++(*offset);
+        if (!(inCS(mv, mv->reg[IP] + (*offset))) && mv->flag == 0)
             errorHandler(mv, 8);
         bytes--;
     }
@@ -222,23 +221,17 @@ Register fetchOperand(TMV* mv, int bytes) {
 
 //Prepara a los operandos para que reciban su informacion
 void fetchOperators(TMV* mv) {
-    int op1Bytes, op2Bytes;
+    int op1Bytes, op2Bytes, offset = 1;
 
-    mv->reg[IP]++;
-    if (!(isIPinCS(mv)))
-        errorHandler(mv, 8);
+    op2Bytes = mv->reg[OP2] >> 24;
+    op1Bytes = mv->reg[OP1] >> 24;
+    if (op1Bytes == 2)
+        errorHandler(mv, 9);
     else {
-        op2Bytes = mv->reg[OP2] >> 24;
-        op1Bytes = mv->reg[OP1] >> 24;
-        if (op1Bytes == 2)
-            errorHandler(mv, 9);
-        else {
-            mv->reg[OP2] |= fetchOperand(mv, op2Bytes);
-            if (mv->flag == 0)
-                mv->reg[OP1] |= fetchOperand(mv, op1Bytes);
-        }
+        mv->reg[OP2] |= fetchOperand(mv, op2Bytes, &offset);
+        if (mv->flag == 0)
+            mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
     }
-    fprintf(stderr, "%x %x\n", mv->reg[OP1], mv->reg[OP2]);
 }
 
 Register getOP(TMV* mv, Register operand) {
@@ -369,62 +362,66 @@ void executeProgram(TMV* mv) {
     //Hay que agregar que se salga si el flag != 0
     //Capaz no hace falta la funcion, esto podria ir en main
 
-    while (mv->flag == 0 && isIPinCS(mv)) {
+    while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
         fetchInstruction(mv);
         fetchOperators(mv);
 
         if(mv->flag == 0) {
-            switch (mv->reg[OPC]) {
-                case NOT:
-                    fnot(mv);
-                    break;
+            if (mv->reg[OPC] == STOP)
+                fstop(mv);
+            else {
+                switch (mv->reg[OPC]) {
+                    case NOT:
+                        fnot(mv);
+                        break;
 
-                case STOP:
-                    fstop(mv);
-                    break;
+                    case MOV:
+                        fmov(mv);
+                        break;
 
-                case MOV:
-                    fmov(mv);
-                    break;
+                    case ADD:
+                        fadd(mv);
+                        break;
 
-                case ADD:
-                    fadd(mv);
-                    break;
+                    case SUB:
+                        fsub(mv);
+                        break;
 
-                case SUB:
-                    fsub(mv);
-                    break;
+                    case MUL:
+                        fmul(mv);
+                        break;
 
-                case MUL:
-                    fmul(mv);
-                    break;
+                    case DIV:
+                        fdiv(mv);
+                        break;
 
-                case DIV:
-                    fdiv(mv);
-                    break;
+                    case AND:
+                        fand(mv);
+                        break;
 
-                case AND:
-                    fand(mv);
-                    break;
+                    case OR:
+                        f_or(mv);
+                        break;
 
-                case OR:
-                    f_or(mv);
-                    break;
+                    case XOR:
+                        fxor(mv);
+                        break;
 
-                case XOR:
-                    fxor(mv);
-                    break;
-
-                // Falta que las instrucciones modifiquen al registro CC
-                // Faltan los errorHandler
-                /*
-                Instrucciones que faltan con...
-                    2 operandos: CMP, JMP, JZ, SHL, SHR, SAR, SWAP, LDH, LDL, RND
-                    1 op: SYS, JMP, JZ, JP, JN, JNZ, JNP, JNN
-                */
-                default: break;
-                    // Error por OPC inválido
+                    // Falta que las instrucciones modifiquen al registro CC
+                    // Faltan los errorHandler
+                    /*
+                    Instrucciones que faltan con...
+                        2 operandos: CMP, JMP, JZ, SHL, SHR, SAR, SWAP, LDH, LDL, RND
+                        1 op: SYS, JMP, JZ, JP, JN, JNZ, JNP, JNN
+                    */
+                    default: break;
+                        // Error por OPC inválido
+                }
+                mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
             }
         }
     }
+
+    if (!(inCS(mv, mv->reg[IP] && mv->reg[OPC] != STOP)))
+        errorHandler(mv, 8);
 }
