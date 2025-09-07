@@ -27,6 +27,8 @@
 #define MASK_UNTYPE 0x00FFFFFF
 #define MASK_REG    0x00FF0000
 #define MASK_OFFSET 0x0000FFFF
+#define MASK_PHY    0x0000FFFF
+#define MASK_SETMEM 0xFF
 
 #define STOP_VALUE 0xFFFFFFFF
 
@@ -111,10 +113,21 @@ void fetchOperators(TMV* mv);
 
 void setLAR(TMV* mv, Register operand);
 void setMAR(TMV* mv, Register cantBytes, Register logical);
+void getMemory(TMV* mv);
+void setMemory(TMV* mv);
 Register getOP(TMV* mv, Register operand);
 void setOP(TMV* mv, Register operandA, Register operandB);
-void fmov(TMV* mv);
+void setCC(TMV* mv, Register valor);
+void fnot(TMV* mv);
 void fstop(TMV* mv);
+void fmov(TMV* mv);
+void fadd(TMV* mv);
+void fsub(TMV* mv);
+void fmul(TMV* mv);
+void fdiv(TMV* mv);
+void fand(TMV* mv);
+void f_or(TMV* mv);
+void fxor(TMV* mv);
 void executeProgram(TMV* mv);
 
 
@@ -242,14 +255,18 @@ void fetchInstruction(TMV* mv) {
 
 //Crea un registro y lo devuelve a los operandos
 Register fetchOperand(TMV* mv, int bytes, int* offset) {
-    Register temp = 0;
+    Register logical, physical, temp = 0;
 
     while (bytes > 0 && mv->flag == 0) {
-        temp |= ((Register) mv->mem[decodeAddr(mv, mv->reg[IP] + (*offset))]) << (8 * (bytes - 1));
-        ++(*offset);
-        if (!(inCS(mv, mv->reg[IP] + (*offset))) && mv->flag == 0)
+        logical = mv->reg[IP] + (*offset);
+        if (!inCS(mv, logical))
             errorHandler(mv, ERR_SEG);
-        bytes--;
+        else {
+            physical = decodeAddr(mv, logical);
+            temp |= ((Register)mv->mem[physical]) << (8 * (bytes - 1));
+            ++(*offset);
+            bytes--;
+        }
     }
 
     return temp;
@@ -290,9 +307,42 @@ void setMAR(TMV* mv, Register cantBytes, Register logical) {
     Register physical;
 
     if (mv->flag == 0) {
-        cantBytes <<= 16;
         physical = decodeAddr(mv, logical);
-        mv->reg[MAR] = cantBytes | physical;
+        if (physical + cantBytes - 1 >= RAM_SIZE)
+            errorHandler(mv, ERR_SEG);
+        else 
+            mv->reg[MAR] = (cantBytes << 16) | physical;
+    }
+}
+
+//Get del valor de memoria al MBR
+void getMemory(TMV* mv) {
+    Register cantBytes, physical, temp;
+    int i;
+
+    if (mv->flag == 0) {
+        cantBytes = mv->reg[MAR] >> 16;
+        physical = mv->reg[MAR] & MASK_PHY;
+        temp = 0;
+
+        for (i = 0; i < cantBytes; i++)
+            temp |= (Register) mv->mem[physical + i] << (8 * (cantBytes - 1 - i));
+
+        mv->reg[MBR] = temp;
+    }
+}
+
+//Set del valor del MBR a la memoria
+void setMemory(TMV* mv) {
+    Register cantBytes, physical;
+    int i;
+
+    if (mv->flag == 0) {
+        cantBytes = mv->reg[MAR] >> 16;
+        physical = mv->reg[MAR] & MASK_PHY;
+
+        for (i = 0; i < cantBytes; i++)
+            mv->mem[physical + i] = mv->reg[MBR] >> (8 * (cantBytes - 1 - i)) & MASK_SETMEM;
     }
 }
 
@@ -308,13 +358,13 @@ Register getOP(TMV* mv, Register operand) {
             res = mv->reg[operand];
             break;
         case 2:
-            //falta extension de signo
-            res = operand;
+            res = (Register)(TwoBytes)operand;
             break;
         case 3:
             setLAR(mv, operand);
             setMAR(mv, 4, mv->reg[LAR]);
-            mv->reg[MBR] = mv->mem[mv->reg[MAR]];
+            getMemory(mv);
+            res = mv->reg[MBR];
             break;
     }
 
@@ -331,7 +381,10 @@ void setOP(TMV* mv, Register operandA, Register operandB) {
             mv->reg[operandA] = operandB;
             break;
         case 3:
-            //Memoria
+            setLAR(mv, operandA);
+            setMAR(mv, 4, mv->reg[LAR]);
+            mv->reg[MBR] = operandB;
+            setMemory(mv);
             break;
     }
 }
@@ -489,6 +542,6 @@ void executeProgram(TMV* mv) {
         }
     }
 
-    if (!(inCS(mv, mv->reg[IP] && mv->reg[OPC] != STOP)))
+    if (!(inCS(mv, mv->reg[IP])) && mv->reg[OPC] != STOP)
         errorHandler(mv, ERR_SEG);
 }
