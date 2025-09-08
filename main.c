@@ -397,6 +397,22 @@ void setCC(TMV* mv, Register valor) {
         mv->reg[CC] = CC_Z;
 }
 
+//Salto con posibilidad de condicion
+void fjmp(TMV* mv, int salto) {
+    if (salto)
+      mv->reg[IP] = get(mv, mv->reg[OP1]);
+}
+
+//Boolean para indicar si saltar por cero
+int fjz(TMV* mv) {
+    return mv->reg[CC] & MASK_Z;
+}
+
+//Boolean para indicar si saltar por negativo
+int fjn(TMV* mv) {
+    return mv->reg[CC] & MASK_N;
+}
+
 //Instruccion NOT bit a bit
 void fnot(TMV* mv) {
     Register res;
@@ -491,6 +507,34 @@ void executeProgram(TMV* mv) {
                 fstop(mv);
             else {
                 switch (mv->reg[OPC]) {
+                    case JMP:
+                        fjmp(mv, 1);
+                        break;
+          
+                    case JZ:
+                        fjmp(mv, fjz(mv));
+                        break;
+            
+                    case JP:
+                        fjmp(mv, !(fjz(mv)) && !(fjn(mv)));
+                        break;
+            
+                    case JN:
+                        fjmp(mv, fjn(mv));
+                        break;
+            
+                    case JNZ:
+                        fjmp(mv, !fjz(mv));
+                        break;
+            
+                    case JNP:
+                        fjmp(mv, fjz(mv) || fjn(mv));
+                        break;
+            
+                    case JNN:
+                        fjmp(mv, !fjn(mv));
+                        break;
+
                     case NOT:
                         fnot(mv);
                         break;
