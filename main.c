@@ -527,8 +527,8 @@ void fxor(TMV* mv) {
 //Intruccion SWAP para cambiar de lugar operandos
 void fswap(TMV* mv) {
     Register aux = 0;
-    aux = getOP(mv, mv->reg[OP1]);
-    setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
+    aux = mv->reg[OP1];
+    mv->reg[OP1] = mv->reg[OP2];
     mv->reg[OP2] = aux;
 }
 
