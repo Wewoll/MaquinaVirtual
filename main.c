@@ -118,6 +118,9 @@ void setMemory(TMV* mv);
 Register getOP(TMV* mv, Register operand);
 void setOP(TMV* mv, Register operandA, Register operandB);
 void setCC(TMV* mv, Register valor);
+void fjmp(TMV* mv, int salto);
+int fjz(TMV* mv);
+int fjn(TMV* mv);
 void fnot(TMV* mv);
 void fstop(TMV* mv);
 void fmov(TMV* mv);
@@ -125,9 +128,13 @@ void fadd(TMV* mv);
 void fsub(TMV* mv);
 void fmul(TMV* mv);
 void fdiv(TMV* mv);
+void fshl(TMV* mv);
+void fshr(TMV* mv);
+void fsar(TMV* mv);
 void fand(TMV* mv);
 void f_or(TMV* mv);
 void fxor(TMV* mv);
+void fswap(TMV* mv);
 void executeProgram(TMV* mv);
 
 
@@ -400,17 +407,17 @@ void setCC(TMV* mv, Register valor) {
 //Salto con posibilidad de condicion
 void fjmp(TMV* mv, int salto) {
     if (salto)
-      mv->reg[IP] = get(mv, mv->reg[OP1]);
+      mv->reg[IP] = getOP(mv, mv->reg[OP1]);
 }
 
 //Boolean para indicar si saltar por cero
 int fjz(TMV* mv) {
-    return mv->reg[CC] & MASK_Z;
+    return mv->reg[CC] & CC_Z;
 }
 
 //Boolean para indicar si saltar por negativo
 int fjn(TMV* mv) {
-    return mv->reg[CC] & MASK_N;
+    return mv->reg[CC] & CC_N;
 }
 
 //Instruccion NOT bit a bit
@@ -469,6 +476,30 @@ void fdiv(TMV* mv) {
     }
 }
 
+//Desplazamientos de bits a izquierda
+void fshl(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) << getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Desplazamientos de bits a derecha
+void fshr(TMV* mv) {
+    Register res;
+    res = (Register) ((uint32_t) getOP(mv, mv->reg[OP1]) >> getOP(mv, mv->reg[OP2]));
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
+//Desplazamientos de bits a derecha pero propaga signo
+void fsar(TMV* mv) {
+    Register res;
+    res = getOP(mv, mv->reg[OP1]) >> getOP(mv, mv->reg[OP2]);
+    setCC(mv, res);
+    setOP(mv, mv->reg[OP1], res);
+}
+
 //Instruccion AND bit a bit
 void fand(TMV* mv) {
     Register res;
@@ -493,6 +524,14 @@ void fxor(TMV* mv) {
     setOP(mv, mv->reg[OP1], res);
 }
 
+//Intruccion SWAP para cambiar de lugar operandos
+void fswap(TMV* mv) {
+    Register aux = 0;
+    aux = getOP(mv, mv->reg[OP1]);
+    setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
+    mv->reg[OP2] = aux;
+}
+
 void executeProgram(TMV* mv) {
     //Hay que agregar errores por si se salio sin stop capaz
     //Hay que agregar que se salga si el flag != 0
@@ -510,27 +549,27 @@ void executeProgram(TMV* mv) {
                     case JMP:
                         fjmp(mv, 1);
                         break;
-          
+
                     case JZ:
                         fjmp(mv, fjz(mv));
                         break;
-            
+
                     case JP:
                         fjmp(mv, !(fjz(mv)) && !(fjn(mv)));
                         break;
-            
+
                     case JN:
                         fjmp(mv, fjn(mv));
                         break;
-            
+
                     case JNZ:
                         fjmp(mv, !fjz(mv));
                         break;
-            
+
                     case JNP:
                         fjmp(mv, fjz(mv) || fjn(mv));
                         break;
-            
+
                     case JNN:
                         fjmp(mv, !fjn(mv));
                         break;
@@ -563,6 +602,18 @@ void executeProgram(TMV* mv) {
                         fsub(mv);
                         break;
 
+                    case SHL:
+                        fshl(mv);
+                        break;
+
+                    case SHR:
+                        fshr(mv);
+                        break;
+
+                    case SAR:
+                        fsar(mv);
+                        break;
+
                     case AND:
                         fand(mv);
                         break;
@@ -575,12 +626,14 @@ void executeProgram(TMV* mv) {
                         fxor(mv);
                         break;
 
-                    // Falta que las instrucciones modifiquen al registro CC
-                    // Faltan los errorHandler
+                    case SWAP:
+                        fswap(mv);
+                        break;
+
                     /*
                     Instrucciones que faltan con...
-                        2 operandos: CMP, JMP, JZ, SHL, SHR, SAR, SWAP, LDH, LDL, RND
-                        1 op: SYS, JMP, JZ, JP, JN, JNZ, JNP, JNN
+                        2 operandos: LDH, LDL, RND
+                        1 op: SYS
                     */
                     default:
                         errorHandler(mv, ERR_INS);
