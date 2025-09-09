@@ -48,7 +48,6 @@ typedef enum {
     ERR_CODSIZE,
     ERR_SEG,
     ERR_INS,
-    ERR_OP1,
     ERR_DIV0,
 } ErrNumber;
 
@@ -63,8 +62,7 @@ static const char* errorMsgs[] = {
     "Error: El codigo es demasiado grande\n",       // 6
     "Error: Fuera de los limites del segmento\n",   // 7 - pedido en el pdf
     "Error: Intruccion invalida\n",                 // 8 - pedido en el pdf
-    "Error: OP1 no puede ser inmediato\n",          // 9
-    "Error: No se puede dividir por 0\n"            // 10 - pedido en el pdf
+    "Error: No se puede dividir por 0\n"            // 9 - pedido en el pdf
 };
 
 //Define de registros
@@ -121,6 +119,9 @@ void setMemory(TMV* mv);
 Register getOP(TMV* mv, Register operand);
 void setOP(TMV* mv, Register operandA, Register operandB);
 void setCC(TMV* mv, Register valor);
+void fsysRead(TMV* mv);
+void fsysWrite(TMV* mv);
+void fsys(TMV* mv);
 void fjmp(TMV* mv, int salto);
 int fjz(TMV* mv);
 int fjn(TMV* mv);
@@ -291,13 +292,9 @@ void fetchOperators(TMV* mv) {
 
     op2Bytes = mv->reg[OP2] >> 24;
     op1Bytes = mv->reg[OP1] >> 24;
-    if (op1Bytes == 2)
-        errorHandler(mv, ERR_OP1);
-    else {
-        mv->reg[OP2] |= fetchOperand(mv, op2Bytes, &offset);
-        if (mv->flag == 0)
-            mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
-    }
+    mv->reg[OP2] |= fetchOperand(mv, op2Bytes, &offset);
+    if (mv->flag == 0)
+        mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
 }
 
 //Seteo del valor del LAR cuando se trabaja con memoria
@@ -309,7 +306,7 @@ void setLAR(TMV* mv, Register operand) {
     cod = (Byte) ((operand & MASK_REG) >> 16);
     offset = (TwoBytes) (operand & MASK_OFFSET);
     logical = ((Register) cod << 16) | offset;
-
+    printf("LAR");
     if (!inSegment(mv, logical))
         errorHandler(mv, ERR_SEG);
     mv->reg[LAR] = logical;
@@ -320,6 +317,7 @@ void setMAR(TMV* mv, Register cantBytes, Register logical) {
     Register physical;
 
     if (mv->flag == 0) {
+        printf("MAR");
         physical = decodeAddr(mv, logical);
         if (physical + cantBytes - 1 >= RAM_SIZE)
             errorHandler(mv, ERR_SEG);
@@ -408,6 +406,42 @@ void setCC(TMV* mv, Register valor) {
         mv->reg[CC] = CC_N;
     else if (valor == 0)
         mv->reg[CC] = CC_Z;
+}
+
+void fsysRead(TMV* mv) {
+    int read;
+
+    scanf("%d", &read);
+    mv->reg[MBR] = read;
+    setMemory(mv);
+}
+
+void fsysWrite(TMV* mv) {
+    int write;
+
+    getMemory(mv);
+    write = mv->reg[MBR];
+    printf("%d", write);
+}
+
+//Funcion SYS
+void fsys(TMV* mv) {
+    int cantBytes, tamCeldas;
+
+    cantBytes = mv->reg[ECX] & MASK_LDL;
+    tamCeldas = (mv->reg[ECX] & MASK_LDH) >> 16;
+
+    setLAR(mv, mv->reg[EDX]);
+    setMAR(mv, tamCeldas, mv->reg[LAR]);
+
+    switch (getOP(mv, mv->reg[OP1])) {
+        case 1:
+            fsysRead(mv);
+            break;
+        case 2:
+            fsysWrite(mv);
+            break;
+    }
 }
 
 //Salto con posibilidad de condicion
@@ -591,16 +625,21 @@ void executeProgram(TMV* mv) {
     //Hay que agregar errores por si se salio sin stop capaz
     //Hay que agregar que se salga si el flag != 0
     //Capaz no hace falta la funcion, esto podria ir en main
-
+    int i = 0;
     while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
         fetchInstruction(mv);
         fetchOperators(mv);
-
+        printf("Instruccion %d - %x - %x\n", i, mv->reg[OPC], mv->reg[IP]);
+        i++;
         if(mv->flag == 0) {
             if (mv->reg[OPC] == STOP)
                 fstop(mv);
             else {
                 switch (mv->reg[OPC]) {
+                    case SYS:
+                        fsys(mv);
+                        break;
+
                     case JMP:
                         fjmp(mv, 1);
                         break;
@@ -707,6 +746,9 @@ void executeProgram(TMV* mv) {
                         break;
                 }
                 mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
+                if (mv->reg[OPC] == SYS) {
+                    printf("%x\n", mv->reg[EDX]);
+                }
             }
         }
     }
