@@ -33,7 +33,7 @@
 #define MASK_LDH    0xFFFF0000
 #define MASK_SETMEM 0xFF
 
-#define STOP_VALUE 0xFFFFFFFF
+#define STOP_VALUE  0xFFFFFFFF
 
 #define CC_N 0x80000000
 #define CC_Z 0x40000000
@@ -99,11 +99,14 @@ typedef struct {
     Register reg[REG_AMOUNT];     // 32 registros de 4 bytes
     TableSeg seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
     Register flag;                // error flag
+    Register disassembler;        //
 } TMV;
 
 void errorHandler(TMV* mv, int err);
 void readFile(TMV *mv, const char *filename);
 void initialization(TMV *mv, TwoBytes codeSize);
+void disASMOP(TMV* mv, Register operand, Byte type);
+void disASM(TMV* mv);
 Register decodeAddr(TMV* mv, Register logical);
 int inSegment(TMV* mv, Register logical);
 int inCS(TMV* mv, Register logical);
@@ -155,6 +158,7 @@ int main(int argc, char *argv[]) {
         errorHandler(&mv, ERR_EXE);
     }
     else {
+        mv.disassembler = (argc == 3) && (strcmp(argv[2], "-d") == 0);
         readFile(&mv, argv[1]);
         if (mv.flag == 0) {
             executeProgram(&mv);
@@ -213,6 +217,38 @@ void initialization(TMV *mv, TwoBytes codeSize) {
     mv->reg[CS] = CS_INI;
     mv->reg[DS] = DS_INI;
     mv->reg[IP] = mv->reg[CS];
+}
+
+void disASMOP(TMV* mv, Register operand, Byte type) {
+    int i = type - 1;
+    Byte aux = 0;
+
+    for (; i >= 0; i--) {
+        aux = (Byte) operand >> (8 * i);
+        printf("%02X ", aux);
+    }
+}
+
+void disASM(TMV* mv) {
+    int i;
+    Byte ins = 0, typA = 0, typB = 0;
+
+    printf("[%04X] ", mv->mem[decodeAddr(mv, mv->reg[IP])]);
+
+    typA = mv->reg[OP1] >> 18;
+    typB = mv->reg[OP2] >> 18;
+    if (typB != 0)
+        typA >>= 2;
+    ins = typB | typA | (Byte) mv->reg[OPC];
+    printf("%02X ", ins);
+
+    disASMOP(mv, mv->reg[OP2], typB);
+    disASMOP(mv, mv->reg[OP1], typA);
+
+    for (i = 6 - typA - typB; i > 0; i--)
+        printf("   ");
+
+    printf("|  \n"); //El \n esta de mas, porque tecnicamente falta la escritura del mnemonico
 }
 
 //Decodificador de direccion logica a direccion fisica
@@ -629,6 +665,8 @@ void executeProgram(TMV* mv) {
     while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
         fetchInstruction(mv);
         fetchOperators(mv);
+        if (mv->disassembler)
+            disASM(mv);
         printf("Instruccion %d - %x - %x\n", i, mv->reg[OPC], mv->reg[IP]);
         i++;
         if(mv->flag == 0) {
