@@ -305,8 +305,8 @@ void setLAR(TMV* mv, Register operand) {
 
     cod = (Byte) ((operand & MASK_REG) >> 16);
     offset = (TwoBytes) (operand & MASK_OFFSET);
-    logical = ((Register) cod << 16) | offset;
-    printf("LAR");
+    logical = mv->reg[cod] + offset;
+    printf("LAR - %x - %x - %x\n", cod, offset, logical);
     if (!inSegment(mv, logical))
         errorHandler(mv, ERR_SEG);
     mv->reg[LAR] = logical;
@@ -317,7 +317,7 @@ void setMAR(TMV* mv, Register cantBytes, Register logical) {
     Register physical;
 
     if (mv->flag == 0) {
-        printf("MAR");
+        printf("MAR\n");
         physical = decodeAddr(mv, logical);
         if (physical + cantBytes - 1 >= RAM_SIZE)
             errorHandler(mv, ERR_SEG);
@@ -747,7 +747,7 @@ void executeProgram(TMV* mv) {
                 }
                 mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
                 if (mv->reg[OPC] == SYS) {
-                    printf("%x\n", mv->reg[EDX]);
+                    printf("%x\n", mv->mem[77]);
                 }
             }
         }
