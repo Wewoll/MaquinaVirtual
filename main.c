@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #define RAM_SIZE   (16 * 1024)  // 16 KiB
 #define REG_AMOUNT 32           // 32 registros
@@ -28,6 +29,8 @@
 #define MASK_REG    0x00FF0000
 #define MASK_OFFSET 0x0000FFFF
 #define MASK_PHY    0x0000FFFF
+#define MASK_LDL    0x0000FFFF
+#define MASK_LDH    0xFFFF0000
 #define MASK_SETMEM 0xFF
 
 #define STOP_VALUE 0xFFFFFFFF
@@ -135,6 +138,9 @@ void fand(TMV* mv);
 void f_or(TMV* mv);
 void fxor(TMV* mv);
 void fswap(TMV* mv);
+void fldl(TMV* mv);
+void fldh(TMV* mv);
+void frnd(TMV* mv);
 void executeProgram(TMV* mv);
 
 
@@ -532,6 +538,55 @@ void fswap(TMV* mv) {
     mv->reg[OP2] = aux;
 }
 
+void fldl(TMV* mv) {
+    Register cargaBaja, cod;
+    Byte tipo;
+
+    cargaBaja = getOP(mv, mv->reg[OP2]) & MASK_LDL;
+    tipo = mv->reg[OP1] >> 24;
+    cod = mv->reg[OP1] & MASK_UNTYPE;
+
+    switch (tipo) {
+        case 1:
+            mv->reg[cod] = (mv->reg[cod] & MASK_LDH) | cargaBaja;
+            break;
+        case 3:
+            setLAR(mv, cod);
+            setMAR(mv, 4, mv->reg[LAR]);
+            mv->reg[MBR] = (mv->reg[MBR] & MASK_LDH) | cargaBaja;
+            setMemory(mv);
+            break;
+    }
+}
+
+void fldh(TMV* mv) {
+    Register cargaAlta, cod;
+    Byte tipo;
+
+    cargaAlta = (getOP(mv, mv->reg[OP2]) & MASK_LDL) << 16;
+    tipo = mv->reg[OP1] >> 24;
+    cod = mv->reg[OP1] & MASK_UNTYPE;
+
+    switch (tipo) {
+        case 1:
+            mv->reg[cod] = (mv->reg[cod] & MASK_LDL) | cargaAlta;
+            break;
+        case 3:
+            setLAR(mv, cod);
+            setMAR(mv, 4, mv->reg[LAR]);
+            mv->reg[MBR] = (mv->reg[MBR] & MASK_LDL) | cargaAlta;
+            setMemory(mv);
+            break;
+    }
+}
+
+void frnd(TMV* mv) {
+    Register randN;
+    srand(time(NULL));
+    randN = (Register) (rand() % getOP(mv, mv->reg[OP2]));
+    setOP(mv, mv->reg[OP1], randN);
+}
+
 void executeProgram(TMV* mv) {
     //Hay que agregar errores por si se salio sin stop capaz
     //Hay que agregar que se salga si el flag != 0
@@ -628,6 +683,18 @@ void executeProgram(TMV* mv) {
 
                     case SWAP:
                         fswap(mv);
+                        break;
+
+                    case LDL:
+                        fldl(mv);
+                        break;
+
+                    case LDH:
+                        fldh(mv);
+                        break;
+
+                    case RND:
+                        frnd(mv);
                         break;
 
                     /*
