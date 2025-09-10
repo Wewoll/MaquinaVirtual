@@ -75,6 +75,41 @@ typedef enum {
     CS = 26, DS
 } RegName;
 
+static const char* regStr[32] = {
+    "LAR",      // 0
+    "MAR",      // 1
+    "MBR",      // 2
+    "IP",       // 3
+    "OPC",      // 4
+    "OP1",      // 5
+    "OP2",      // 6
+    "INVALID",  // 7
+    "INVALID",  // 8
+    "INVALID",  // 9
+    "EAX",      // 10
+    "EBX",      // 11
+    "ECX",      // 12
+    "EDX",      // 13
+    "EEX",      // 14
+    "EFX",      // 15
+    "AC",       // 16
+    "CC",       // 17
+    "INVALID",  // 18
+    "INVALID",  // 19
+    "INVALID",  // 20
+    "INVALID",  // 21
+    "INVALID",  // 22
+    "INVALID",  // 23
+    "INVALID",  // 24
+    "INVALID",  // 25
+    "CS",       // 26
+    "DS",       // 27
+    "INVALID",  // 28
+    "INVALID",  // 29
+    "INVALID",  // 30
+    "INVALID"   // 31
+};
+
 //Define de instrucciones
 typedef enum {
     SYS = 0x00, JMP, JZ, JP, JN, JNZ, JNP, JNN, NOT,
@@ -82,8 +117,44 @@ typedef enum {
     MOV = 0x10, ADD, SUB, MUL, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
 } OpCode;
 
+static const char* opStr[32] = {
+    "SYS",      // 0x00
+    "JMP",      // 0x01
+    "JZ",       // 0x02
+    "JP",       // 0x03
+    "JN",       // 0x04
+    "JNZ",      // 0x05
+    "JNP",      // 0x06
+    "JNN",      // 0x07
+    "NOT",      // 0x08
+    "INVALID",  // 0x09
+    "INVALID",  // 0x0A
+    "INVALID",  // 0x0B
+    "INVALID",  // 0x0C
+    "INVALID",  // 0x0D
+    "INVALID",  // 0x0E
+    "STOP",     // 0x0F
+    "MOV",      // 0x10
+    "ADD",      // 0x11
+    "SUB",      // 0x12
+    "MUL",      // 0x13
+    "DIV",      // 0x14
+    "CMP",      // 0x15
+    "SHL",      // 0x16
+    "SHR",      // 0x17
+    "SAR",      // 0x18
+    "AND",      // 0x19
+    "OR",       // 0x1A
+    "XOR",      // 0x1B
+    "SWAP",     // 0x1C
+    "LDL",      // 0x1D
+    "LDH",      // 0x1E
+    "RND"       // 0x1F
+};
+
 //Tamanos usados
 typedef int8_t Byte;
+typedef uint8_t UByte;
 typedef int16_t TwoBytes;
 typedef int32_t Register;
 
@@ -224,22 +295,47 @@ void disASMOP(TMV* mv, Register operand, Byte type) {
     Byte aux = 0;
 
     for (; i >= 0; i--) {
-        aux = (Byte) operand >> (8 * i);
+        aux = (Byte) (operand >> (8 * i));
         printf("%02X ", aux);
+    }
+}
+
+void disASMOPStr(TMV* mv, Register operand, Byte type) {
+    operand &= MASK_UNTYPE;
+
+    switch (type) {
+        case 1:
+            printf("%s", regStr[operand]);
+            break;
+        case 2:
+            printf("%d", operand);
+            break;
+        case 3: {
+            printf("[%s", regStr[operand >> 16]);
+            operand = (Register) ((TwoBytes) operand);
+            if (operand > 0)
+                printf("+");
+            if (operand != 0)
+                printf("%d]", operand);
+        }
     }
 }
 
 void disASM(TMV* mv) {
     int i;
-    Byte ins = 0, typA = 0, typB = 0;
+    UByte ins = 0, typA = 0, typB = 0, typInsA = 0, typInsB = 0;
 
-    printf("[%04X] ", mv->mem[decodeAddr(mv, mv->reg[IP])]);
+    printf("[%04X] ", decodeAddr(mv, mv->reg[IP]));
 
-    typA = mv->reg[OP1] >> 18;
-    typB = mv->reg[OP2] >> 18;
+    typA = (UByte)(mv->reg[OP1] >> 24);
+    typB = (UByte)(mv->reg[OP2] >> 24);
+    typInsA = typA << 6;
+    typInsB = typB << 6;
+
     if (typB != 0)
-        typA >>= 2;
-    ins = typB | typA | (Byte) mv->reg[OPC];
+        typInsA >>= 2;
+
+    ins = (UByte) mv->reg[OPC] | typInsB | typInsA;
     printf("%02X ", ins);
 
     disASMOP(mv, mv->reg[OP2], typB);
@@ -248,7 +344,13 @@ void disASM(TMV* mv) {
     for (i = 6 - typA - typB; i > 0; i--)
         printf("   ");
 
-    printf("|  \n"); //El \n esta de mas, porque tecnicamente falta la escritura del mnemonico
+    printf("|  %s\t", opStr[mv->reg[OPC]]);
+    disASMOPStr(mv, mv->reg[OP1], typA);
+    if (typB != 0) {
+        printf(",\t");
+        disASMOPStr(mv, mv->reg[OP2], typB);
+    }
+    printf("\n");
 }
 
 //Decodificador de direccion logica a direccion fisica
@@ -462,9 +564,9 @@ void fsysWrite(TMV* mv) {
 
 //Funcion SYS
 void fsys(TMV* mv) {
-    int cantBytes, tamCeldas;
+    int tamCeldas;
 
-    cantBytes = mv->reg[ECX] & MASK_LDL;
+    //cantBytes = mv->reg[ECX] & MASK_LDL;
     tamCeldas = (mv->reg[ECX] & MASK_LDH) >> 16;
 
     setLAR(mv, mv->reg[EDX]);
@@ -658,17 +760,13 @@ void frnd(TMV* mv) {
 }
 
 void executeProgram(TMV* mv) {
-    //Hay que agregar errores por si se salio sin stop capaz
-    //Hay que agregar que se salga si el flag != 0
     //Capaz no hace falta la funcion, esto podria ir en main
-    int i = 0;
+
     while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
         fetchInstruction(mv);
         fetchOperators(mv);
         if (mv->disassembler)
             disASM(mv);
-        printf("Instruccion %d - %x - %x\n", i, mv->reg[OPC], mv->reg[IP]);
-        i++;
         if(mv->flag == 0) {
             if (mv->reg[OPC] == STOP)
                 fstop(mv);
@@ -776,7 +874,7 @@ void executeProgram(TMV* mv) {
 
                     /*
                     Instrucciones que faltan con...
-                        2 operandos: LDH, LDL, RND
+                        2 operandos: RND
                         1 op: SYS
                     */
                     default:
