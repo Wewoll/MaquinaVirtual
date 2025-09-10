@@ -316,7 +316,8 @@ void disASMOPStr(TMV* mv, Register operand, Byte type) {
             if (operand > 0)
                 printf("+");
             if (operand != 0)
-                printf("%d]", operand);
+                printf("%d", operand);
+            printf("]");
         }
     }
 }
@@ -441,10 +442,13 @@ void setLAR(TMV* mv, Register operand) {
     TwoBytes offset;
     Register logical;
 
-    cod = (Byte) ((operand & MASK_REG) >> 16);
-    offset = (TwoBytes) (operand & MASK_OFFSET);
-    logical = mv->reg[cod] + offset;
-    printf("LAR - %x - %x - %x\n", cod, offset, logical);
+    if (mv->reg[OPC] != SYS) {
+        cod = (Byte) ((operand & MASK_REG) >> 16);
+        offset = (TwoBytes) (operand & MASK_OFFSET);
+        logical = mv->reg[cod] + offset;
+    }
+    else
+        logical = operand;
     if (!inSegment(mv, logical))
         errorHandler(mv, ERR_SEG);
     mv->reg[LAR] = logical;
@@ -455,7 +459,6 @@ void setMAR(TMV* mv, Register cantBytes, Register logical) {
     Register physical;
 
     if (mv->flag == 0) {
-        printf("MAR\n");
         physical = decodeAddr(mv, logical);
         if (physical + cantBytes - 1 >= RAM_SIZE)
             errorHandler(mv, ERR_SEG);
@@ -474,8 +477,9 @@ void getMemory(TMV* mv) {
         physical = mv->reg[MAR] & MASK_PHY;
         temp = 0;
 
-        for (i = 0; i < cantBytes; i++)
+        for (i = 0; i < cantBytes; i++) {
             temp |= (Register) mv->mem[physical + i] << (8 * (cantBytes - 1 - i));
+        }
 
         mv->reg[MBR] = temp;
     }
@@ -555,14 +559,14 @@ void fsysRead(TMV* mv) {
 }
 
 void fsysWrite(TMV* mv) {
-    int write;
+    Register write;
 
     getMemory(mv);
     write = mv->reg[MBR];
-    printf("%d", write);
+    printf("%X\n", write);
 }
 
-//Funcion SYS
+//Funcion SYS - falta terminar
 void fsys(TMV* mv) {
     int tamCeldas;
 
@@ -710,6 +714,7 @@ void fswap(TMV* mv) {
     mv->reg[OP2] = aux;
 }
 
+//Instruccion LDL para hacer carga baja
 void fldl(TMV* mv) {
     Register cargaBaja, cod;
     Byte tipo;
@@ -731,6 +736,7 @@ void fldl(TMV* mv) {
     }
 }
 
+//Instruccion LDH para hacer carga alta
 void fldh(TMV* mv) {
     Register cargaAlta, cod;
     Byte tipo;
@@ -752,6 +758,8 @@ void fldh(TMV* mv) {
     }
 }
 
+//Instruccion RND para dar un numero random
+//Falta corregir o arreglar
 void frnd(TMV* mv) {
     Register randN;
     srand(time(NULL));
@@ -767,6 +775,7 @@ void executeProgram(TMV* mv) {
         fetchOperators(mv);
         if (mv->disassembler)
             disASM(mv);
+        mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
         if(mv->flag == 0) {
             if (mv->reg[OPC] == STOP)
                 fstop(mv);
@@ -880,10 +889,6 @@ void executeProgram(TMV* mv) {
                     default:
                         errorHandler(mv, ERR_INS);
                         break;
-                }
-                mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
-                if (mv->reg[OPC] == SYS) {
-                    printf("%x\n", mv->mem[77]);
                 }
             }
         }
