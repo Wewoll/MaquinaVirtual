@@ -157,6 +157,7 @@ typedef int8_t Byte;
 typedef uint8_t UByte;
 typedef int16_t TwoBytes;
 typedef int32_t Register;
+typedef uint32_t URegister;
 
 //Tabla de descriptores de segmentos
 typedef struct {
@@ -170,12 +171,12 @@ typedef struct {
     Register reg[REG_AMOUNT];     // 32 registros de 4 bytes
     TableSeg seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
     Register flag;                // error flag
-    Register disassembler;        //
 } TMV;
 
 void errorHandler(TMV* mv, int err);
 void readFile(TMV *mv, const char *filename);
-void initialization(TMV *mv, TwoBytes codeSize);
+void initializationTable(TMV* mv, TwoBytes codeSize);
+void initializationReg(TMV* mv);
 void disASMOP(TMV* mv, Register operand, Byte type);
 void disASM(TMV* mv);
 Register decodeAddr(TMV* mv, Register logical);
@@ -229,9 +230,10 @@ int main(int argc, char *argv[]) {
         errorHandler(&mv, ERR_EXE);
     }
     else {
-        mv.disassembler = (argc == 3) && (strcmp(argv[2], "-d") == 0);
         readFile(&mv, argv[1]);
         if (mv.flag == 0) {
+            if ((argc == 3) && (strcmp(argv[2], "-d") == 0))
+                disASM(&mv);
             executeProgram(&mv);
         }
     }
@@ -268,7 +270,8 @@ void readFile(TMV* mv, const char* filename) {
             else {
                 //Carga del codigo en la memoria principal e inicializar
                 fread(mv->mem, 1, codeSize, arch);
-                initialization(mv, codeSize);
+                initializationTable(mv, codeSize);
+                initializationReg(mv);
             }
         }
         fclose(arch);
@@ -276,15 +279,16 @@ void readFile(TMV* mv, const char* filename) {
 }
 
 
-//Armar tabla de descriptores de segmentos e inicializar registros CS, DS, IP
-void initialization(TMV *mv, TwoBytes codeSize) {
-    //Inicio de la tabla de descriptores de segmentos
+//Inicio de la tabla de descriptores de segmentos
+void initializationTable(TMV* mv, TwoBytes codeSize) {
     mv->seg[CS_SEG].base = 0;
     mv->seg[CS_SEG].size = codeSize;
     mv->seg[DS_SEG].base = codeSize;
     mv->seg[DS_SEG].size = RAM_SIZE - codeSize;
+}
 
-    //Inicio de las pocisiones de CS, DS e IP
+//Inicio de las pocisiones de CS, DS e IP
+void initializationReg(TMV* mv) {
     mv->reg[CS] = CS_INI;
     mv->reg[DS] = DS_INI;
     mv->reg[IP] = mv->reg[CS];
@@ -326,32 +330,42 @@ void disASM(TMV* mv) {
     int i;
     UByte ins = 0, typA = 0, typB = 0, typInsA = 0, typInsB = 0;
 
-    printf("[%04X] ", decodeAddr(mv, mv->reg[IP]));
+    while (inCS(mv, mv->reg[IP])) {
+        fetchInstruction(mv);
+        fetchOperators(mv);
 
-    typA = (UByte)(mv->reg[OP1] >> 24);
-    typB = (UByte)(mv->reg[OP2] >> 24);
-    typInsA = typA << 6;
-    typInsB = typB << 6;
+        printf("[%04X] ", decodeAddr(mv, mv->reg[IP]));
 
-    if (typB != 0)
-        typInsA >>= 2;
+        typA = (UByte)(mv->reg[OP1] >> 24);
+        typB = (UByte)(mv->reg[OP2] >> 24);
+        typInsA = typA << 6;
+        typInsB = typB << 6;
 
-    ins = (UByte) mv->reg[OPC] | typInsB | typInsA;
-    printf("%02X ", ins);
+        if (typB != 0)
+            typInsA >>= 2;
 
-    disASMOP(mv, mv->reg[OP2], typB);
-    disASMOP(mv, mv->reg[OP1], typA);
+        ins = (UByte) mv->reg[OPC] | typInsB | typInsA;
+        printf("%02X ", ins);
 
-    for (i = 6 - typA - typB; i > 0; i--)
-        printf("   ");
+        disASMOP(mv, mv->reg[OP2], typB);
+        disASMOP(mv, mv->reg[OP1], typA);
 
-    printf("|  %s\t", opStr[mv->reg[OPC]]);
-    disASMOPStr(mv, mv->reg[OP1], typA);
-    if (typB != 0) {
-        printf(",\t");
-        disASMOPStr(mv, mv->reg[OP2], typB);
+        for (i = 6 - typA - typB; i > 0; i--)
+            printf("   ");
+
+        printf("|  %s\t", opStr[mv->reg[OPC]]);
+
+        disASMOPStr(mv, mv->reg[OP1], typA);
+        if (typB != 0) {
+            printf(",\t");
+            disASMOPStr(mv, mv->reg[OP2], typB);
+        }
+        printf("\n");
+
+        mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
     }
-    printf("\n");
+
+    initializationReg(mv);
 }
 
 //Decodificador de direccion logica a direccion fisica
@@ -553,6 +567,7 @@ void setCC(TMV* mv, Register valor) {
 void fsysRead(TMV* mv) {
     int read;
 
+    printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
     scanf("%d", &read);
     mv->reg[MBR] = read;
     setMemory(mv);
@@ -563,7 +578,7 @@ void fsysWrite(TMV* mv) {
 
     getMemory(mv);
     write = mv->reg[MBR];
-    printf("%X\n", write);
+    printf("[%04X]: %X\n", decodeAddr(mv, mv->reg[LAR]), write);
 }
 
 //Funcion SYS - falta terminar
@@ -773,9 +788,8 @@ void executeProgram(TMV* mv) {
     while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
         fetchInstruction(mv);
         fetchOperators(mv);
-        if (mv->disassembler)
-            disASM(mv);
         mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
+
         if(mv->flag == 0) {
             if (mv->reg[OPC] == STOP)
                 fstop(mv);
