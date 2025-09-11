@@ -42,21 +42,22 @@
 typedef int8_t Byte;
 typedef uint8_t UByte;
 typedef int16_t TwoBytes;
+typedef uint16_t UTwoBytes;
 typedef int32_t Register;
 typedef uint32_t URegister;
 
 //Tabla de descriptores de segmentos
 typedef struct {
-    TwoBytes base;   // dirección lógica de inicio
-    TwoBytes size;   // tamaño del segmento en bytes
+    UTwoBytes base;   // dirección lógica de inicio
+    UTwoBytes size;   // tamaño del segmento en bytes
 } TableSeg;
 
 //Maquina Virtual
 typedef struct {
-    Byte     mem[RAM_SIZE];       // 16 KiB de RAM
+    UByte    mem[RAM_SIZE];       // 16 KiB de RAM
     Register reg[REG_AMOUNT];     // 32 registros de 4 bytes
     TableSeg seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
-    Register flag;                // error flag
+    UByte    flag;                // error flag
 } TMV;
 
 //Define de error
@@ -282,8 +283,9 @@ int main(int argc, char *argv[]) {
     else {
         readFile(&mv, argv[1]);
         if (mv.flag == 0) {
-            if ((argc == 3) && (strcmp(argv[2], "-d") == 0))
+            if ((argc == 3) && (strcmp(argv[2], "-d") == 0)) {
                 disASM(&mv);
+            }
             executeProgram(&mv);
         }
     }
@@ -315,7 +317,7 @@ void errorHandler(TMV* mv, int err) {
 //Lee el archivo
 void readFile(TMV* mv, const char* filename) {
     FILE *arch;
-    Byte header[HEADER_RANGE];
+    UByte header[HEADER_RANGE];
     TwoBytes codeSize;
 
     arch = fopen(filename, "rb");
@@ -329,7 +331,7 @@ void readFile(TMV* mv, const char* filename) {
         else if (header[5] != 1)
             errorHandler(mv, ERR_ARCHVER);
         else {
-            codeSize = ((TwoBytes) header[6] << 8) | header[7];
+            codeSize = ((UTwoBytes) header[6] << 8) | header[7];
             if (codeSize >= RAM_SIZE)
                 errorHandler(mv, ERR_CODSIZE);
             else {
@@ -361,10 +363,10 @@ void initializationReg(TMV* mv) {
 
 void disASMOP(TMV* mv, Register operand, Byte type) {
     int i = type - 1;
-    Byte aux = 0;
+    UByte aux = 0;
 
     for (; i >= 0; i--) {
-        aux = (Byte) (operand >> (8 * i));
+        aux = (UByte) (operand >> (8 * i));
         printf("%02X ", aux);
     }
 }
@@ -377,7 +379,7 @@ void disASMOPStr(TMV* mv, Register operand, Byte type) {
             printf("%s", regStr[operand]);
             break;
         case 2:
-            printf("%d", operand);
+            printf("%d", (TwoBytes) operand);
             break;
         case 3: {
             printf("[%s", regStr[operand >> 16]);
