@@ -38,6 +38,27 @@
 #define CC_N 0x80000000
 #define CC_Z 0x40000000
 
+//Tamanos usados
+typedef int8_t Byte;
+typedef uint8_t UByte;
+typedef int16_t TwoBytes;
+typedef int32_t Register;
+typedef uint32_t URegister;
+
+//Tabla de descriptores de segmentos
+typedef struct {
+    TwoBytes base;   // dirección lógica de inicio
+    TwoBytes size;   // tamaño del segmento en bytes
+} TableSeg;
+
+//Maquina Virtual
+typedef struct {
+    Byte     mem[RAM_SIZE];       // 16 KiB de RAM
+    Register reg[REG_AMOUNT];     // 32 registros de 4 bytes
+    TableSeg seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
+    Register flag;                // error flag
+} TMV;
+
 //Define de error
 typedef enum {
     ERR_EXE = 1,
@@ -152,27 +173,8 @@ static const char* opStr[32] = {
     "RND"       // 0x1F
 };
 
-//Tamanos usados
-typedef int8_t Byte;
-typedef uint8_t UByte;
-typedef int16_t TwoBytes;
-typedef int32_t Register;
-typedef uint32_t URegister;
-
-//Tabla de descriptores de segmentos
-typedef struct {
-    TwoBytes base;   // dirección lógica de inicio
-    TwoBytes size;   // tamaño del segmento en bytes
-} TableSeg;
-
-//Maquina Virtual
-typedef struct {
-    Byte     mem[RAM_SIZE];       // 16 KiB de RAM
-    Register reg[REG_AMOUNT];     // 32 registros de 4 bytes
-    TableSeg seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
-    Register flag;                // error flag
-} TMV;
-
+//Prototipos
+void executeProgram(TMV* mv);
 void errorHandler(TMV* mv, int err);
 void readFile(TMV *mv, const char *filename);
 void initializationTable(TMV* mv, TwoBytes codeSize);
@@ -187,6 +189,7 @@ void fetchInstruction(TMV* mv);
 Register fetchOperand(TMV* mv, int bytes, int* offset);
 void fetchOperators(TMV* mv);
 
+//Prototipos centrados a operaciones
 void setLAR(TMV* mv, Register operand);
 void setMAR(TMV* mv, Register cantBytes, Register logical);
 void getMemory(TMV* mv);
@@ -217,10 +220,57 @@ void fswap(TMV* mv);
 void fldl(TMV* mv);
 void fldh(TMV* mv);
 void frnd(TMV* mv);
-void executeProgram(TMV* mv);
 
+//Tipo puntero a Funcion
+typedef void (*InstrFunc)(TMV*);
 
+// Wrappers para instrucciones de salto y otras especiales
+void instr_jmp(TMV* mv)      { fjmp(mv, 1); }
+void instr_jz(TMV* mv)       { fjmp(mv, fjz(mv)); }
+void instr_jp(TMV* mv)       { fjmp(mv, !(fjz(mv)) && !(fjn(mv))); }
+void instr_jn(TMV* mv)       { fjmp(mv, fjn(mv)); }
+void instr_jnz(TMV* mv)      { fjmp(mv, !fjz(mv)); }
+void instr_jnp(TMV* mv)      { fjmp(mv, fjz(mv) || fjn(mv)); }
+void instr_jnn(TMV* mv)      { fjmp(mv, !fjn(mv)); }
+void instr_invalid(TMV* mv)  { errorHandler(mv, ERR_INS); }
 
+//Tabla de punteros a funciones
+InstrFunc instrTable[32] = {
+    fsys,           // 0x00 SYS
+    instr_jmp,      // 0x01 JMP
+    instr_jz,       // 0x02 JZ
+    instr_jp,       // 0x03 JP
+    instr_jn,       // 0x04 JN
+    instr_jnz,      // 0x05 JNZ
+    instr_jnp,      // 0x06 JNP
+    instr_jnn,      // 0x07 JNN
+    fnot,           // 0x08 NOT
+    instr_invalid,  // 0x09
+    instr_invalid,  // 0x0A
+    instr_invalid,  // 0x0B
+    instr_invalid,  // 0x0C
+    instr_invalid,  // 0x0D
+    instr_invalid,  // 0x0E
+    fstop,          // 0x0F STOP
+    fmov,           // 0x10 MOV
+    fadd,           // 0x11 ADD
+    fsub,           // 0x12 SUB
+    fmul,           // 0x13 MUL
+    fdiv,           // 0x14 DIV
+    fsub,           // 0x15 CMP (es sub, pero sin set)
+    fshl,           // 0x16 SHL
+    fshr,           // 0x17 SHR
+    fsar,           // 0x18 SAR
+    fand,           // 0x19 AND
+    f_or,           // 0x1A OR
+    fxor,           // 0x1B XOR
+    fswap,          // 0x1C SWAP
+    fldl,           // 0x1D LDL
+    fldh,           // 0x1E LDH
+    frnd            // 0x1F RND
+};
+
+//Lectura del archivo, disassambler y ejecucion
 int main(int argc, char *argv[]) {
     TMV mv;
 
@@ -239,6 +289,21 @@ int main(int argc, char *argv[]) {
     }
 
     return mv.flag;
+}
+
+//Flujo principal de ejecucion
+void executeProgram(TMV* mv) {
+    while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
+        fetchInstruction(mv);
+        fetchOperators(mv);
+        mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
+
+        if(mv->flag == 0)
+            instrTable[mv->reg[OPC]](mv);
+    }
+
+    if (!(inCS(mv, mv->reg[IP])) && mv->reg[OPC] != STOP)
+        errorHandler(mv, ERR_SEG);
 }
 
 //Manejo de errores
@@ -436,6 +501,9 @@ Register fetchOperand(TMV* mv, int bytes, int* offset) {
         }
     }
 
+    if (bytes == 2 && (temp & 0x00008000))
+        temp |= 0x00FF0000;
+
     return temp;
 }
 
@@ -525,7 +593,9 @@ Register getOP(TMV* mv, Register operand) {
             res = mv->reg[operand];
             break;
         case 2:
-            res = (Register)(TwoBytes)operand;
+            res = operand;
+            if (res & 0x00800000)
+                res |= 0xFF000000;
             break;
         case 3:
             setLAR(mv, operand);
@@ -780,134 +850,4 @@ void frnd(TMV* mv) {
     srand(time(NULL));
     randN = (Register) (rand() % getOP(mv, mv->reg[OP2]));
     setOP(mv, mv->reg[OP1], randN);
-}
-
-void executeProgram(TMV* mv) {
-    //Capaz no hace falta la funcion, esto podria ir en main
-
-    while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
-        fetchInstruction(mv);
-        fetchOperators(mv);
-        mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
-
-        if(mv->flag == 0) {
-            if (mv->reg[OPC] == STOP)
-                fstop(mv);
-            else {
-                switch (mv->reg[OPC]) {
-                    case SYS:
-                        fsys(mv);
-                        break;
-
-                    case JMP:
-                        fjmp(mv, 1);
-                        break;
-
-                    case JZ:
-                        fjmp(mv, fjz(mv));
-                        break;
-
-                    case JP:
-                        fjmp(mv, !(fjz(mv)) && !(fjn(mv)));
-                        break;
-
-                    case JN:
-                        fjmp(mv, fjn(mv));
-                        break;
-
-                    case JNZ:
-                        fjmp(mv, !fjz(mv));
-                        break;
-
-                    case JNP:
-                        fjmp(mv, fjz(mv) || fjn(mv));
-                        break;
-
-                    case JNN:
-                        fjmp(mv, !fjn(mv));
-                        break;
-
-                    case NOT:
-                        fnot(mv);
-                        break;
-
-                    case MOV:
-                        fmov(mv);
-                        break;
-
-                    case ADD:
-                        fadd(mv);
-                        break;
-
-                    case SUB:
-                        fsub(mv);
-                        break;
-
-                    case MUL:
-                        fmul(mv);
-                        break;
-
-                    case DIV:
-                        fdiv(mv);
-                        break;
-
-                    case CMP:
-                        fsub(mv);
-                        break;
-
-                    case SHL:
-                        fshl(mv);
-                        break;
-
-                    case SHR:
-                        fshr(mv);
-                        break;
-
-                    case SAR:
-                        fsar(mv);
-                        break;
-
-                    case AND:
-                        fand(mv);
-                        break;
-
-                    case OR:
-                        f_or(mv);
-                        break;
-
-                    case XOR:
-                        fxor(mv);
-                        break;
-
-                    case SWAP:
-                        fswap(mv);
-                        break;
-
-                    case LDL:
-                        fldl(mv);
-                        break;
-
-                    case LDH:
-                        fldh(mv);
-                        break;
-
-                    case RND:
-                        frnd(mv);
-                        break;
-
-                    /*
-                    Instrucciones que faltan con...
-                        2 operandos: RND
-                        1 op: SYS
-                    */
-                    default:
-                        errorHandler(mv, ERR_INS);
-                        break;
-                }
-            }
-        }
-    }
-
-    if (!(inCS(mv, mv->reg[IP])) && mv->reg[OPC] != STOP)
-        errorHandler(mv, ERR_SEG);
 }
