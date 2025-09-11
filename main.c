@@ -9,6 +9,7 @@
 #define SEG_AMOUNT 2            // 2 descriptores de segmentos
 
 #define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
+#define OP_FIELD_WIDTH 12
 
 // Indice de segmentos de la tabla de descriptores
 #define CS_SEG 0
