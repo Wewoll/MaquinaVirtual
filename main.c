@@ -276,6 +276,7 @@ int main(int argc, char *argv[]) {
     TMV mv;
 
     mv.flag = 0;
+    srand(time(NULL));
 
     if (argc < 2) {
         errorHandler(&mv, ERR_EXE);
@@ -846,10 +847,19 @@ void fldh(TMV* mv) {
 }
 
 //Instruccion RND para dar un numero random
-//Falta corregir o arreglar
 void frnd(TMV* mv) {
-    Register randN;
-    srand(time(NULL));
-    randN = (Register) (rand() % getOP(mv, mv->reg[OP2]));
+    Register max, randN;
+    int r, lim;
+
+    max = getOP(mv, mv->reg[OP2]);
+    if (max <= 1) {
+        randN = 0;
+    } else {
+        lim = RAND_MAX - (RAND_MAX % max);
+        do {
+            r = rand();
+        } while (r >= lim);
+        randN = (Register) (r % max);
+    }
     setOP(mv, mv->reg[OP1], randN);
 }
