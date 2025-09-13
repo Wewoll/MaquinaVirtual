@@ -3,13 +3,13 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 #define RAM_SIZE   (16 * 1024)  // 16 KiB
 #define REG_AMOUNT 32           // 32 registros
 #define SEG_AMOUNT 2            // 2 descriptores de segmentos
 
 #define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
-#define OP_FIELD_WIDTH 12
 
 // Indice de segmentos de la tabla de descriptores
 #define CS_SEG 0
@@ -182,6 +182,7 @@ void readFile(TMV *mv, const char *filename);
 void initializationTable(TMV* mv, TwoBytes codeSize);
 void initializationReg(TMV* mv);
 void disASMOP(TMV* mv, Register operand, Byte type);
+void disASMOPStr(TMV* mv, Register operand, Byte type, int* len);
 void disASM(TMV* mv);
 Register decodeAddr(TMV* mv, Register logical);
 int inSegment(TMV* mv, Register logical);
@@ -373,33 +374,52 @@ void disASMOP(TMV* mv, Register operand, Byte type) {
     }
 }
 
-void disASMOPStr(TMV* mv, Register operand, Byte type) {
+int countDigits(int n) {
+    if (n == 0) {
+        return 1; // Special case for 0
+    }
+    return floor(log10(fabs(n))) + 1;
+}
+
+void disASMOPStr(TMV* mv, Register operand, Byte type, int* len) {
     operand &= MASK_UNTYPE;
 
     switch (type) {
         case 1:
             printf("%s", regStr[operand]);
+            (*len) += strlen(regStr[operand]);
             break;
         case 2:
-            printf("%d", (TwoBytes) operand);
+            if (1 <= mv->reg[OPC] && mv->reg[OPC] <= 7)
+                printf("0x%04X", (TwoBytes) operand);
+            else
+                printf("%d", (TwoBytes) operand);
             break;
         case 3: {
             printf("[%s", regStr[operand >> 16]);
+            ++(*len);
+            (*len) += strlen(regStr[operand >> 16]);
             operand = (Register) ((TwoBytes) operand);
             if (operand > 0)
                 printf("+");
-            if (operand != 0)
+            if (operand != 0) {
                 printf("%d", operand);
+                ++(*len);
+                (*len) += countDigits(operand);
+            }
             printf("]");
+            ++(*len);
+            break;
         }
     }
 }
 
 void disASM(TMV* mv) {
-    int i;
+    int i, len;
     UByte ins = 0, typA = 0, typB = 0, typInsA = 0, typInsB = 0;
 
     while (inCS(mv, mv->reg[IP])) {
+        len = 0;
         fetchInstruction(mv);
         fetchOperators(mv);
 
@@ -424,10 +444,12 @@ void disASM(TMV* mv) {
 
         printf("|  %s\t", opStr[mv->reg[OPC]]);
 
-        disASMOPStr(mv, mv->reg[OP1], typA);
+        disASMOPStr(mv, mv->reg[OP1], typA, &len);
         if (typB != 0) {
-            printf(",\t");
-            disASMOPStr(mv, mv->reg[OP2], typB);
+            printf(",");
+            for (i = 10 - len; i > 0; i--)
+                printf(" ");
+            disASMOPStr(mv, mv->reg[OP2], typB, &len);
         }
         printf("\n");
 
