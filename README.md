@@ -4,6 +4,14 @@
 
 ---
 
+## Autores
+
+- Lucas Paniagua
+- Victoria Cherepakhin
+- Nicolas Zuviria
+
+---
+
 ## Descripción
 
 Este trabajo práctico consiste en desarrollar una aplicación, en un lenguaje de programación a elección, que **emule la ejecución de un programa en el lenguaje máquina** de una computadora descripta en el documento de la cátedra.
@@ -95,14 +103,6 @@ vmx archivo.vmx [-d]
 - **vmx**: ejecutable de la máquina virtual.
 - **archivo.vmx** (obligatorio): ruta y nombre del archivo con el programa en lenguaje máquina.
 - **-d** (opcional): flag que muestra el código desensamblado (assembler correspondiente al código máquina cargado en memoria).
-
----
-
-## Autores
-
-- Lucas Paniagua
-- Victoria Cherepakhin
-- Nicolas Zuviria
 
 ---
 
