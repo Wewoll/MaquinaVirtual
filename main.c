@@ -302,7 +302,6 @@ void executeProgram(TMV* mv) {
         fetchInstruction(mv);
         fetchOperators(mv);
         mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
-
         if(mv->flag == 0)
             instrTable[mv->reg[OPC]](mv);
     }
@@ -513,17 +512,17 @@ void fetchInstruction(TMV* mv) {
 
 //Crea un registro y lo devuelve a los operandos
 Register fetchOperand(TMV* mv, int bytes, int* offset) {
-    Register logical, physical, temp = 0;
+    Register logical, physical, temp = 0, i = bytes;
 
-    while (bytes > 0 && mv->flag == 0) {
+    while (i > 0 && mv->flag == 0) {
         logical = mv->reg[IP] + (*offset);
         if (!inCS(mv, logical))
             errorHandler(mv, ERR_SEG);
         else {
             physical = decodeAddr(mv, logical);
-            temp |= ((Register)mv->mem[physical]) << (8 * (bytes - 1));
+            temp |= ((Register)mv->mem[physical]) << (8 * (i - 1));
             ++(*offset);
-            bytes--;
+            i--;
         }
     }
 
@@ -654,53 +653,98 @@ void setOP(TMV* mv, Register operandA, Register operandB) {
 
 //Setear el CC
 void setCC(TMV* mv, Register valor) {
+    if (valor == 0)
+        mv->reg[CC] |= 0x40000000;
+    else
+        mv->reg[CC] &= 0xBFFFFFFF;
+
     if (valor < 0)
-        mv->reg[CC] = CC_N;
-    else if (valor == 0)
-        mv->reg[CC] = CC_Z;
+        mv->reg[CC] |= 0x80000000;
+    else
+        mv->reg[CC] &= 0x7FFFFFFF;
 }
 
+//SYS Read
 void fsysRead(TMV* mv) {
     int read;
 
     printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
-    scanf("%d", &read);
+    switch (mv->reg[EAX]) {
+        case 16:
+            scanf("%b", &read);
+            break;
+        case 8:
+            scanf("%X", &read);
+            break;
+        case 4:
+            scanf("%o", &read);
+            break;
+        case 2:
+            scanf("%c", &read);
+            break;
+        case 1:
+            scanf("%d", &read);
+            break;
+        default: break;
+    }
+
     mv->reg[MBR] = read;
     setMemory(mv);
 }
 
+//SYS Write
 void fsysWrite(TMV* mv) {
     Register write;
 
     getMemory(mv);
     write = mv->reg[MBR];
-    printf("[%04X]: %X\n", decodeAddr(mv, mv->reg[LAR]), write);
+    printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
+
+    if (mv->reg[EAX] & 0x10)
+        printf(" %b", write);
+    if (mv->reg[EAX] & 0x08)
+        printf(" %X", write);
+    if (mv->reg[EAX] & 0x04)
+        printf(" %o", write);
+    if (mv->reg[EAX] & 0x02)
+        printf(" %c", write);
+    if (mv->reg[EAX] & 0x01)
+        printf(" %d", write);
+
+    printf("\n");
 }
 
-//Funcion SYS - falta terminar
+//Funcion SYS
 void fsys(TMV* mv) {
-    int tamCeldas;
+    int cantCeldas, cantBytes, i = 0;
 
-    //cantBytes = mv->reg[ECX] & MASK_LDL;
-    tamCeldas = (mv->reg[ECX] & MASK_LDH) >> 16;
+    cantCeldas = mv->reg[ECX] & MASK_LDL;
+    cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
 
-    setLAR(mv, mv->reg[EDX]);
-    setMAR(mv, tamCeldas, mv->reg[LAR]);
+    while (mv->flag == 0 && i < cantCeldas) {
+        setLAR(mv, mv->reg[EDX] + cantBytes * i);
+        setMAR(mv, cantBytes, mv->reg[LAR]);
 
-    switch (getOP(mv, mv->reg[OP1])) {
-        case 1:
-            fsysRead(mv);
-            break;
-        case 2:
-            fsysWrite(mv);
-            break;
+        if (mv->flag == 0) {
+            switch (getOP(mv, mv->reg[OP1])) {
+                case 1:
+                    fsysRead(mv);
+                    break;
+                case 2:
+                    fsysWrite(mv);
+                    break;
+            }
+            i++;
+        }
     }
 }
 
 //Salto con posibilidad de condicion
 void fjmp(TMV* mv, int salto) {
-    if (salto)
-      mv->reg[IP] = getOP(mv, mv->reg[OP1]);
+    if (salto) {
+        mv->reg[IP] &= MASK_LDH;
+        mv->reg[IP] |= (getOP(mv, mv->reg[OP1]) & MASK_LDL);
+    }
 }
 
 //Boolean para indicar si saltar por cero
