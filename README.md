@@ -12,6 +12,18 @@
 
 ---
 
+## Índice
+
+- [Descripción](#descripción)
+- [Objetivos](#objetivos)
+- [Componentes de la Máquina Virtual](#componentes-de-la-máquina-virtual)
+- [Ejecución](#ejecución)
+- [Uso del Traductor (`vmt`)](#uso-del-traductor-vmt)
+- [Uso de la Máquina Virtual (`vmx`)](#uso-de-la-máquina-virtual-vmx)
+- [Créditos](#créditos)
+
+---
+
 ## Descripción
 
 Este trabajo práctico consiste en desarrollar una aplicación, en un lenguaje de programación a elección, que **emule la ejecución de un programa en el lenguaje máquina** de una computadora descripta en el documento de la cátedra.
@@ -49,8 +61,10 @@ La máquina virtual implementada cuenta con los siguientes componentes principal
 
 2. **Inicialización de registros:**
    - **CS** y **DS** se cargan con punteros al comienzo del segmento de código y de datos, respectivamente.  
-     - CS = `0x00000000`
-     - DS = `0x00010000`
+     - En **esta primera parte**, los valores iniciales son:
+       - CS = `0x00000000`
+       - DS = `0x00010000`
+     - (**Nota:** En futuras entregas, estos valores pueden variar según la implementación de los segmentos.)
    - **IP** se inicializa apuntando a la primera instrucción del código (igual que CS).
 
 3. **Ciclo de ejecución:**
