@@ -123,3 +123,12 @@ vmx archivo.vmx [-d]
 ## Créditos
 
 Trabajo realizado para la asignatura **Fundamentos de la Arquitectura de Computadoras**.
+
+**Docentes:**
+- Lic. Pablo A. Montini
+- Ing. Juan I. Iturriaga
+- Ing. Franco Lanzillotta
+
+**Ayudantes:**
+- Erik Borgnia Giannini
+- Francisco Verón
