@@ -666,12 +666,13 @@ void setCC(TMV* mv, Register valor) {
 
 //SYS Read
 void fsysRead(TMV* mv) {
-    int read;
+    Register read;
+    char car;
 
     printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
     switch (mv->reg[EAX]) {
         case 16:
-            scanf("%b", &read);
+            scanf("%d", &read);
             break;
         case 8:
             scanf("%X", &read);
@@ -680,7 +681,8 @@ void fsysRead(TMV* mv) {
             scanf("%o", &read);
             break;
         case 2:
-            scanf("%c", &read);
+            scanf("%c", &car);
+            read = (Register) car;
             break;
         case 1:
             scanf("%d", &read);
@@ -701,13 +703,13 @@ void fsysWrite(TMV* mv) {
     printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
 
     if (mv->reg[EAX] & 0x10)
-        printf(" %b", write);
+        printf(" 0b%d", write);
     if (mv->reg[EAX] & 0x08)
-        printf(" %X", write);
+        printf(" 0x%X", write);
     if (mv->reg[EAX] & 0x04)
-        printf(" %o", write);
+        printf(" 0c%o", write);
     if (mv->reg[EAX] & 0x02)
-        printf(" %c", write);
+        printf(" %c", (char) write);
     if (mv->reg[EAX] & 0x01)
         printf(" %d", write);
 
