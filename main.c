@@ -200,6 +200,7 @@ void setMemory(TMV* mv);
 Register getOP(TMV* mv, Register operand);
 void setOP(TMV* mv, Register operandA, Register operandB);
 void setCC(TMV* mv, Register valor);
+Register binToDecC2(char *binStr);
 void fsysRead(TMV* mv);
 void fsysWrite(TMV* mv);
 void fsys(TMV* mv);
@@ -664,15 +665,32 @@ void setCC(TMV* mv, Register valor) {
         mv->reg[CC] &= 0x7FFFFFFF;
 }
 
+// Recibe un número binario en complemento a 2 en formato String, y devulve su valor decimal
+Register binToDecC2(char *binStr) {
+    int len = strlen(binStr);
+    Register value = 0;
+
+    for (int i = 0; i < len; i++) {
+        value = (value << 1) | (binStr[i] - '0');
+    }
+
+    if (binStr[0] == '1') {
+        value -= (1 << len);
+    }
+
+    return value;
+}
+
 //SYS Read
 void fsysRead(TMV* mv) {
     Register read;
-    char car;
+    char car, binStr[33];
 
     printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
     switch (mv->reg[EAX]) {
         case 16:
-            scanf("%d", &read);
+            scanf("%32s", binStr);
+            read = binToDecC2(binStr);
             break;
         case 8:
             scanf("%X", &read);
