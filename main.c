@@ -715,7 +715,7 @@ void fsysRead(TMV* mv) {
 
 // Recibe un número decimal, y devulve su representación binaria en complemento a 2 en formato String
 void decToBinC2(Register value, char *binStr) {
-    Register unsignedValue = (Register)value;
+    uint32_t unsignedValue = (uint32_t)value;
     int bits = 0;
 
     if (value == 0) {                
@@ -725,7 +725,7 @@ void decToBinC2(Register value, char *binStr) {
     }
 
     if (value > 0) {              
-        Register tempValue = (Register)value;
+        uint32_t tempValue = (uint32_t)value;
         while (tempValue > 0) {
             tempValue >>= 1;
             bits++;
