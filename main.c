@@ -202,6 +202,7 @@ void setOP(TMV* mv, Register operandA, Register operandB);
 void setCC(TMV* mv, Register valor);
 Register binToDecC2(char *binStr);
 void fsysRead(TMV* mv);
+void decToBinC2(Register value, char *binStr);
 void fsysWrite(TMV* mv);
 void fsys(TMV* mv);
 void fjmp(TMV* mv, int salto);
@@ -712,16 +713,50 @@ void fsysRead(TMV* mv) {
     setMemory(mv);
 }
 
+// Recibe un número decimal, y devulve su representación binaria en complemento a 2 en formato String
+void decToBinC2(Register value, char *binStr) {
+    Register unsignedValue = (Register)value;
+    int bits = 0;
+
+    if (value == 0) {                
+        binStr[0] = '0';
+        binStr[1] = '\0';
+        return;
+    }
+
+    if (value > 0) {              
+        Register tempValue = (Register)value;
+        while (tempValue > 0) {
+            tempValue >>= 1;
+            bits++;
+        }
+    } else {                       
+        bits = 1;
+        while (value < -(Register)(1u << (bits - 1)) && bits < 32) {
+            bits++;
+        }
+    }
+
+    for (int i = bits - 1, j = 0; i >= 0; i--, j++) {
+        binStr[j] = ((unsignedValue >> i) & 1u) ? '1' : '0';
+    }
+    binStr[bits] = '\0';
+}
+
+
 //SYS Write
 void fsysWrite(TMV* mv) {
     Register write;
+    char binStr[33];
 
     getMemory(mv);
     write = mv->reg[MBR];
     printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
 
-    if (mv->reg[EAX] & 0x10)
-        printf(" 0b%d", write);
+    if (mv->reg[EAX] & 0x10) {
+        decToBinC2(write, binStr);
+        printf("%s", binStr);
+    }
     if (mv->reg[EAX] & 0x08)
         printf(" 0x%X", write);
     if (mv->reg[EAX] & 0x04)
