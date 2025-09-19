@@ -6,9 +6,9 @@
 
 ## Autores
 
-- Lucas Paniagua
-- Victoria Cherepakhin
-- Nicolas Zuviria
+- Paniagua, Lucas
+- Cherepakhin, Victoria
+- Zuviria, Nicolas
 
 ---
 
