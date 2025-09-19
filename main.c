@@ -3,13 +3,17 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
-#include <math.h>
 
 #define RAM_SIZE   (16 * 1024)  // 16 KiB
 #define REG_AMOUNT 32           // 32 registros
 #define SEG_AMOUNT 2            // 2 descriptores de segmentos
 
 #define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
+
+// Constantes para el Disassambler
+#define MNEM_WIDTH 8
+#define OP1_WIDTH  14
+#define OP2_WIDTH  10
 
 // Indice de segmentos de la tabla de descriptores
 #define CS_SEG 0
@@ -375,84 +379,80 @@ void disASMOP(TMV* mv, Register operand, Byte type) {
     }
 }
 
-int countDigits(int n) {
-    if (n == 0) {
-        return 1; // Special case for 0
-    }
-    return floor(log10(fabs(n))) + 1;
-}
-
-void disASMOPStr(TMV* mv, Register operand, Byte type, int* len) {
+void disASMOPStrToBuf(TMV* mv, Register operand, Byte type, char* buf, size_t buflen) {
     operand &= MASK_UNTYPE;
-
     switch (type) {
         case 1:
-            printf("%s", regStr[operand]);
-            (*len) += strlen(regStr[operand]);
+            snprintf(buf, buflen, "%s", regStr[operand]);
             break;
         case 2:
             if (1 <= mv->reg[OPC] && mv->reg[OPC] <= 7)
-                printf("0x%04X", (TwoBytes) operand);
+                snprintf(buf, buflen, "0x%04X", (TwoBytes) operand);
             else
-                printf("%d", (TwoBytes) operand);
+                snprintf(buf, buflen, "%d", (TwoBytes) operand);
             break;
         case 3: {
-            printf("[%s", regStr[operand >> 16]);
-            ++(*len);
-            (*len) += strlen(regStr[operand >> 16]);
-            operand = (Register) ((TwoBytes) operand);
+            char tmp[32];
+            snprintf(tmp, sizeof(tmp), "[%s", regStr[operand >> 16]);
+            size_t len = strlen(tmp);
+            operand = (Register)((TwoBytes)operand);
             if (operand > 0)
-                printf("+");
+                strncat(tmp, "+", sizeof(tmp) - len - 1);
             if (operand != 0) {
-                printf("%d", operand);
-                ++(*len);
-                (*len) += countDigits(operand);
+                char num[16];
+                snprintf(num, sizeof(num), "%d", operand);
+                strncat(tmp, num, sizeof(tmp) - strlen(tmp) - 1);
             }
-            printf("]");
-            ++(*len);
+            strncat(tmp, "]", sizeof(tmp) - strlen(tmp) - 1);
+            snprintf(buf, buflen, "%s", tmp);
             break;
         }
     }
 }
 
 void disASM(TMV* mv) {
-    int i, len;
+    int i;
     UByte ins = 0, typA = 0, typB = 0, typInsA = 0, typInsB = 0;
+    char op1Str[32], op2Str[32], mnemStr[16];
 
     while (inCS(mv, mv->reg[IP])) {
-        len = 0;
         fetchInstruction(mv);
         fetchOperators(mv);
 
+        // --- Primer mitad: posicion de memoria y bytes en hexadecimal ---
+        // Memoria
         printf("[%04X] ", decodeAddr(mv, mv->reg[IP]));
 
+        // Formacion del byte de instruccion
         typA = (UByte)(mv->reg[OP1] >> 24);
         typB = (UByte)(mv->reg[OP2] >> 24);
         typInsA = typA << 6;
         typInsB = typB << 6;
-
         if (typB != 0)
             typInsA >>= 2;
-
         ins = (UByte) mv->reg[OPC] | typInsB | typInsA;
-        printf("%02X ", ins);
 
+        // Bytes de instruccion
+        printf("%02X ", ins);
         disASMOP(mv, mv->reg[OP2], typB);
         disASMOP(mv, mv->reg[OP1], typA);
-
         for (i = 6 - typA - typB; i > 0; i--)
             printf("   ");
 
-        printf("|  %s\t", opStr[mv->reg[OPC]]);
+        // --- Segunda mitad: mnemonico y operandos alineados ---
+        snprintf(mnemStr, sizeof(mnemStr), "%s", opStr[mv->reg[OPC]]);
+        op1Str[0] = 0;
+        op2Str[0] = 0;
+        disASMOPStrToBuf(mv, mv->reg[OP1], typA, op1Str, sizeof(op1Str));
+        disASMOPStrToBuf(mv, mv->reg[OP2], typB, op2Str, sizeof(op2Str));
 
-        disASMOPStr(mv, mv->reg[OP1], typA, &len);
         if (typB != 0) {
-            printf(",");
-            for (i = 10 - len; i > 0; i--)
-                printf(" ");
-            disASMOPStr(mv, mv->reg[OP2], typB, &len);
+            // OP1 alineado a la derecha, coma pegada, OP2 alineado a la derecha
+            printf("|  %-*s%*s,%*s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str, OP2_WIDTH, op2Str);
+        } else {
+            // Solo OP1 alineado a la derecha
+            printf("|  %-*s%*s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str);
         }
-        printf("\n");
 
         mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
     }
