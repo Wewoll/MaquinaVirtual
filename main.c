@@ -684,8 +684,11 @@ Register binToDecC2(char *binStr) {
 
 //SYS Read
 void fsysRead(TMV* mv) {
-    Register read;
+    Register read = 0;
     char car, binStr[33];
+    int cantBytes, i;
+
+    cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
 
     printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
     switch (mv->reg[EAX]) {
@@ -700,8 +703,11 @@ void fsysRead(TMV* mv) {
             scanf("%o", &read);
             break;
         case 2:
-            scanf("%c", &car);
-            read = (Register) car;
+            // Leer varios caracteres y empaquetar en Register (de más significativo a menos)
+            for (i = cantBytes - 1; i >= 0; i--) {
+                scanf(" %c", &car);
+                read |= ((Register)car) << (8 * i);
+            }
             break;
         case 1:
             scanf("%d", &read);
@@ -718,19 +724,19 @@ void decToBinC2(Register value, char *binStr) {
     uint32_t unsignedValue = (uint32_t)value;
     int bits = 0;
 
-    if (value == 0) {                
+    if (value == 0) {
         binStr[0] = '0';
         binStr[1] = '\0';
         return;
     }
 
-    if (value > 0) {              
+    if (value > 0) {
         uint32_t tempValue = (uint32_t)value;
         while (tempValue > 0) {
             tempValue >>= 1;
             bits++;
         }
-    } else {                       
+    } else {
         bits = 1;
         while (value < -(Register)(1u << (bits - 1)) && bits < 32) {
             bits++;
@@ -748,21 +754,29 @@ void decToBinC2(Register value, char *binStr) {
 void fsysWrite(TMV* mv) {
     Register write;
     char binStr[33];
+    int cantBytes, i;
 
     getMemory(mv);
     write = mv->reg[MBR];
+    cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
     printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
 
     if (mv->reg[EAX] & 0x10) {
         decToBinC2(write, binStr);
-        printf("%s", binStr);
+        printf(" 0b%s", binStr);
     }
     if (mv->reg[EAX] & 0x08)
         printf(" 0x%X", write);
     if (mv->reg[EAX] & 0x04)
         printf(" 0c%o", write);
-    if (mv->reg[EAX] & 0x02)
-        printf(" %c", (char) write);
+    if (mv->reg[EAX] & 0x02) {
+        printf(" ");
+        // Imprime cada byte como caracter, de más significativo a menos
+        for (i = cantBytes - 1; i >= 0; i--) {
+            char c = (char)((write >> (8 * i)) & 0xFF);
+            printf("%c", c);
+        }
+    }
     if (mv->reg[EAX] & 0x01)
         printf(" %d", write);
 
