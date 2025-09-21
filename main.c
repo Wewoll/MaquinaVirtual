@@ -308,8 +308,9 @@ void executeProgram(TMV* mv) {
         fetchInstruction(mv);
         fetchOperators(mv);
         mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
-        if(mv->flag == 0)
+        if(mv->flag == 0) {
             instrTable[mv->reg[OPC]](mv);
+        }
     }
 
     if (!(inCS(mv, mv->reg[IP])) && mv->reg[OPC] != STOP)
@@ -942,15 +943,15 @@ void fxor(TMV* mv) {
 //Intruccion SWAP para cambiar de lugar operandos
 void fswap(TMV* mv) {
     Register aux = 0;
-    aux = mv->reg[OP1];
-    mv->reg[OP1] = mv->reg[OP2];
-    mv->reg[OP2] = aux;
+    aux = getOP(mv, mv->reg[OP1]);
+    setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
+    setOP(mv, mv->reg[OP2], aux);
 }
 
 //Instruccion LDL para hacer carga baja
 void fldl(TMV* mv) {
     Register cargaBaja, cod;
-    Byte tipo;
+    UByte tipo;
 
     cargaBaja = getOP(mv, mv->reg[OP2]) & MASK_LDL;
     tipo = mv->reg[OP1] >> 24;
@@ -972,7 +973,7 @@ void fldl(TMV* mv) {
 //Instruccion LDH para hacer carga alta
 void fldh(TMV* mv) {
     Register cargaAlta, cod;
-    Byte tipo;
+    UByte tipo;
 
     cargaAlta = (getOP(mv, mv->reg[OP2]) & MASK_LDL) << 16;
     tipo = mv->reg[OP1] >> 24;
