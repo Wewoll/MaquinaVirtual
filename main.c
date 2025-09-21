@@ -719,36 +719,45 @@ void fsysRead(TMV* mv) {
     setMemory(mv);
 }
 
-// Recibe un número decimal, y devulve su representación binaria en complemento a 2 en formato String
+// Recibe un número decimal y devulve su representación binaria en complemento a 2 en formato String
 void decToBinC2(Register value, char *binStr) {
-    uint32_t unsignedValue = (uint32_t)value;
-    int bits = 0;
+    URegister uValue;
+    int bitIndex, stringPos, firstOneFound, bit;
 
-    if (value == 0) {
-        binStr[0] = '0';
-        binStr[1] = '\0';
-        return;
-    }
+    uValue = (URegister)value;
+    stringPos = 0;
+    firstOneFound = 0;
+    bitIndex = 31;
 
-    if (value > 0) {
-        uint32_t tempValue = (uint32_t)value;
-        while (tempValue > 0) {
-            tempValue >>= 1;
-            bits++;
+    if (value < 0) {
+        // Negativos, imprimir los 32 bits completos
+        for (; bitIndex >= 0; bitIndex--) {
+            bit = (uValue >> bitIndex) & 1u;
+            binStr[stringPos] = bit ? '1' : '0';
+            stringPos++;
         }
     } else {
-        bits = 1;
-        while (value < -(Register)(1u << (bits - 1)) && bits < 32) {
-            bits++;
+        // Positivos, imprimir desde el primer '1' hasta el final
+        for (; bitIndex >= 0; bitIndex--) {
+            bit = (uValue >> bitIndex) & 1u;
+            if (bit) {
+                firstOneFound = 1;
+            }
+            if (firstOneFound) {
+                binStr[stringPos] = bit ? '1' : '0';
+                stringPos++;
+            }
+        }
+
+        // Caso especial: value = 0
+        if (!firstOneFound) {
+            binStr[stringPos] = '0';
+            stringPos++;
         }
     }
 
-    for (int i = bits - 1, j = 0; i >= 0; i--, j++) {
-        binStr[j] = ((unsignedValue >> i) & 1u) ? '1' : '0';
-    }
-    binStr[bits] = '\0';
+    binStr[stringPos] = '\0';
 }
-
 
 //SYS Write
 void fsysWrite(TMV* mv) {
