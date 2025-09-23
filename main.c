@@ -4,11 +4,13 @@
 #include <string.h>
 #include <time.h>
 
-#define RAM_SIZE   (16 * 1024)  // 16 KiB
-#define REG_AMOUNT 32           // 32 registros
-#define SEG_AMOUNT 2            // 2 descriptores de segmentos
+// Tamanos de la MV
+#define RAM_SIZE   (16 * 1024)  // 16 KiB de memoria RAM
+#define REG_AMOUNT 32           // 32 Registros
+#define SEG_AMOUNT 2            // 2 Descriptores de segmentos
 
-#define HEADER_RANGE 8          // Primeros bytes de cabecera del .vmx
+// Primeros bytes de cabecera del .vmx
+#define HEADER_RANGE 8
 
 // Constantes para el Disassambler
 #define MNEM_WIDTH 8
@@ -21,14 +23,19 @@
 
 // Macros para construir la dirección logica inicial de cada segmento
 #define SEG_POS(seg) ((seg) << 16)
-
 #define CS_INI SEG_POS(CS_SEG)
 #define DS_INI SEG_POS(DS_SEG)
 
+// Mascaras para extraer los OP
 #define MASKB_OPC 0b00011111
 #define MASKB_OP1 0b00110000
 #define MASKB_OP2 0b11000000
 
+// Mascaras para CC
+#define CC_N 0x80000000
+#define CC_Z 0x40000000
+
+// Mascaras varias
 #define MASK_SEG    0xFFFF0000
 #define MASK_UNTYPE 0x00FFFFFF
 #define MASK_REG    0x00FF0000
@@ -38,34 +45,32 @@
 #define MASK_LDH    0xFFFF0000
 #define MASK_SETMEM 0xFF
 
+// Valor que se asigna a IP cuando la instruccion es STOP
 #define STOP_VALUE  0xFFFFFFFF
 
-#define CC_N 0x80000000
-#define CC_Z 0x40000000
-
-//Tamanos usados
+// Tamanos usados dentro del codigo
 typedef int8_t Byte;
 typedef uint8_t UByte;
-typedef int16_t TwoBytes;
-typedef uint16_t UTwoBytes;
-typedef int32_t Register;
-typedef uint32_t URegister;
+typedef int16_t Word;
+typedef uint16_t UWord;
+typedef int32_t Long;
+typedef uint32_t ULong;
 
-//Tabla de descriptores de segmentos
+// Tabla de descriptores de segmentos
 typedef struct {
-    UTwoBytes base;   // dirección lógica de inicio
-    UTwoBytes size;   // tamaño del segmento en bytes
+    UWord base;   // dirección lógica de inicio
+    UWord size;   // tamaño del segmento en bytes
 } TableSeg;
 
-//Maquina Virtual
+// Maquina Virtual
 typedef struct {
-    UByte    mem[RAM_SIZE];       // 16 KiB de RAM
-    Register reg[REG_AMOUNT];     // 32 registros de 4 bytes
-    TableSeg seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
-    UByte    flag;                // error flag
+    UByte      mem[RAM_SIZE];       // 16 KiB de RAM
+    Long       reg[REG_AMOUNT];     // 32 registros de 4 bytes
+    TableSeg   seg[SEG_AMOUNT];     // tabla de segmentos: 0 = CS, 1 = DS
+    UByte      flag;                // error flag
 } TMV;
 
-//Define de error
+// Enumeracion de errores
 typedef enum {
     ERR_EXE = 1,
     ERR_FOPEN,
@@ -78,7 +83,7 @@ typedef enum {
     ERR_DIV0,
 } ErrNumber;
 
-//Vector de mensajes de errores
+// Vector de mensajes de errores
 static const char* errorMsgs[] = {
     NULL,                                           // indice 0 (sin error)
     "Uso: vmx archivo.vmx [-d]\n",                  // 1
@@ -92,7 +97,7 @@ static const char* errorMsgs[] = {
     "Error: No se puede dividir por 0\n"            // 9 - pedido en el pdf
 };
 
-//Define de registros
+// Enumeracion de registros
 typedef enum {
     LAR = 0, MAR, MBR,
     IP = 3, OPC, OP1, OP2,
@@ -102,6 +107,7 @@ typedef enum {
     CS = 26, DS
 } RegName;
 
+// Vector de nombres de registros
 static const char* regStr[32] = {
     "LAR",      // 0
     "MAR",      // 1
@@ -137,13 +143,14 @@ static const char* regStr[32] = {
     "INVALID"   // 31
 };
 
-//Define de instrucciones
+// Enumeracion de instrucciones
 typedef enum {
     SYS = 0x00, JMP, JZ, JP, JN, JNZ, JNP, JNN, NOT,
     STOP = 0x0F,
     MOV = 0x10, ADD, SUB, MUL, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
 } OpCode;
 
+// Vector de mnemonicos de instrucciones
 static const char* opStr[32] = {
     "SYS",      // 0x00
     "JMP",      // 0x01
@@ -179,35 +186,41 @@ static const char* opStr[32] = {
     "RND"       // 0x1F
 };
 
-//Prototipos
+// --- Prototipos ---
 void executeProgram(TMV* mv);
 void errorHandler(TMV* mv, int err);
 void readFile(TMV *mv, const char *filename);
-void initializationTable(TMV* mv, TwoBytes codeSize);
+void initializationTable(TMV* mv, Word codeSize);
 void initializationReg(TMV* mv);
-void disASMOP(TMV* mv, Register operand, Byte type);
-void disASMOPStr(TMV* mv, Register operand, Byte type, int* len);
+
+// Prototipos del disassambler
+void disASMOP(TMV* mv, Long operand, Byte type);
+void disASMOPStr(TMV* mv, Long operand, Byte type, int* len);
 void disASM(TMV* mv);
-Register decodeAddr(TMV* mv, Register logical);
-int inSegment(TMV* mv, Register logical);
-int inCS(TMV* mv, Register logical);
-int inDS(TMV* mv, Register logical);
+
+// Prototipos de ubicacion fisica
+Long decodeAddr(TMV* mv, Long logical);
+int inSegment(TMV* mv, Long logical);
+int inCS(TMV* mv, Long logical);
+int inDS(TMV* mv, Long logical);
+
+// Prototipos de fetch
 void fetchInstruction(TMV* mv);
-Register fetchOperand(TMV* mv, int bytes, int* offset);
+Long fetchOperand(TMV* mv, int bytes, int* offset);
 void fetchOperators(TMV* mv);
 
-//Prototipos centrados a operaciones
-void setLAR(TMV* mv, Register operand);
-void setMAR(TMV* mv, Register cantBytes, Register logical);
+// Prototipos de memoria
+void setLAR(TMV* mv, Long operand);
+void setMAR(TMV* mv, Long cantBytes, Long logical);
 void getMemory(TMV* mv);
 void setMemory(TMV* mv);
-Register getOP(TMV* mv, Register operand);
-void setOP(TMV* mv, Register operandA, Register operandB);
-void setCC(TMV* mv, Register valor);
-Register binToDecC2(char *binStr);
-void fsysRead(TMV* mv);
-void decToBinC2(Register value, char *binStr);
-void fsysWrite(TMV* mv);
+
+// Prototipos centrados a instrucciones
+Long getOP(TMV* mv, Long operand);
+void setOP(TMV* mv, Long operandA, Long operandB);
+void setCC(TMV* mv, Long valor);
+void fsysRead(TMV* mv, int cantBytes);
+void fsysWrite(TMV* mv, int cantBytes);
 void fsys(TMV* mv);
 void fjmp(TMV* mv, int salto);
 int fjz(TMV* mv);
@@ -230,10 +243,10 @@ void fldl(TMV* mv);
 void fldh(TMV* mv);
 void frnd(TMV* mv);
 
-//Tipo puntero a Funcion
+// Puntero a funcion de las instrucciones
 typedef void (*InstrFunc)(TMV*);
 
-// Wrappers para instrucciones de salto y otras especiales
+// Wrappers para instrucciones de salto y errores
 void instr_jmp(TMV* mv)      { fjmp(mv, 1); }
 void instr_jz(TMV* mv)       { fjmp(mv, fjz(mv)); }
 void instr_jp(TMV* mv)       { fjmp(mv, !(fjz(mv)) && !(fjn(mv))); }
@@ -243,7 +256,7 @@ void instr_jnp(TMV* mv)      { fjmp(mv, fjz(mv) || fjn(mv)); }
 void instr_jnn(TMV* mv)      { fjmp(mv, !fjn(mv)); }
 void instr_invalid(TMV* mv)  { errorHandler(mv, ERR_INS); }
 
-//Tabla de punteros a funciones
+// Tabla de punteros a funciones
 InstrFunc instrTable[32] = {
     fsys,           // 0x00 SYS
     instr_jmp,      // 0x01 JMP
@@ -279,12 +292,13 @@ InstrFunc instrTable[32] = {
     frnd            // 0x1F RND
 };
 
-//Lectura del archivo, disassambler y ejecucion
+//  --- CODIGO ---
+// Lectura del archivo, disassambler y ejecucion
 int main(int argc, char *argv[]) {
     TMV mv;
 
     mv.flag = 0;
-    srand(time(NULL));
+    srand(time(NULL));  // Para la instruccion RND
 
     if (argc < 2) {
         errorHandler(&mv, ERR_EXE);
@@ -302,12 +316,13 @@ int main(int argc, char *argv[]) {
     return mv.flag;
 }
 
-//Flujo principal de ejecucion
+// Flujo principal de ejecucion
 void executeProgram(TMV* mv) {
     while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
         fetchInstruction(mv);
         fetchOperators(mv);
         mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
+
         if(mv->flag == 0) {
             instrTable[mv->reg[OPC]](mv);
         }
@@ -317,17 +332,17 @@ void executeProgram(TMV* mv) {
         errorHandler(mv, ERR_SEG);
 }
 
-//Manejo de errores
+// Manejo de errores
 void errorHandler(TMV* mv, int err) {
     mv->flag = err;
     fprintf(stderr, "%s", errorMsgs[err]);
 }
 
-//Lee el archivo
+// Lectura del archivo
 void readFile(TMV* mv, const char* filename) {
     FILE *arch;
     UByte header[HEADER_RANGE];
-    TwoBytes codeSize;
+    Word codeSize;
 
     arch = fopen(filename, "rb");
     if (arch == NULL)
@@ -340,7 +355,7 @@ void readFile(TMV* mv, const char* filename) {
         else if (header[5] != 1)
             errorHandler(mv, ERR_ARCHVER);
         else {
-            codeSize = ((UTwoBytes) header[6] << 8) | header[7];
+            codeSize = ((UWord) header[6] << 8) | header[7];
             if (codeSize >= RAM_SIZE)
                 errorHandler(mv, ERR_CODSIZE);
             else {
@@ -355,22 +370,23 @@ void readFile(TMV* mv, const char* filename) {
 }
 
 
-//Inicio de la tabla de descriptores de segmentos
-void initializationTable(TMV* mv, TwoBytes codeSize) {
+// Inicializacion de la tabla de descriptores de segmentos
+void initializationTable(TMV* mv, Word codeSize) {
     mv->seg[CS_SEG].base = 0;
     mv->seg[CS_SEG].size = codeSize;
     mv->seg[DS_SEG].base = codeSize;
     mv->seg[DS_SEG].size = RAM_SIZE - codeSize;
 }
 
-//Inicio de las pocisiones de CS, DS e IP
+// Inicializacion de las pocisiones de segmentos e IP
 void initializationReg(TMV* mv) {
     mv->reg[CS] = CS_INI;
     mv->reg[DS] = DS_INI;
     mv->reg[IP] = mv->reg[CS];
 }
 
-void disASMOP(TMV* mv, Register operand, Byte type) {
+// Funcion para transformar un operando a bytes para el disassembler
+void disASMOP(TMV* mv, Long operand, Byte type) {
     int i = type - 1;
     UByte aux = 0;
 
@@ -380,7 +396,8 @@ void disASMOP(TMV* mv, Register operand, Byte type) {
     }
 }
 
-void disASMOPStrToBuf(TMV* mv, Register operand, Byte type, char* buf, size_t buflen) {
+// Funcion para transformar un operando a string para el disassembler
+void disASMOPStrToBuf(TMV* mv, Long operand, Byte type, char* buf, size_t buflen) {
     operand &= MASK_UNTYPE;
     switch (type) {
         case 1:
@@ -388,15 +405,15 @@ void disASMOPStrToBuf(TMV* mv, Register operand, Byte type, char* buf, size_t bu
             break;
         case 2:
             if (1 <= mv->reg[OPC] && mv->reg[OPC] <= 7)
-                snprintf(buf, buflen, "0x%04X", (TwoBytes) operand);
+                snprintf(buf, buflen, "0x%04X", (Word) operand);
             else
-                snprintf(buf, buflen, "%d", (TwoBytes) operand);
+                snprintf(buf, buflen, "%d", (Word) operand);
             break;
         case 3: {
             char tmp[32];
             snprintf(tmp, sizeof(tmp), "[%s", regStr[operand >> 16]);
             size_t len = strlen(tmp);
-            operand = (Register)((TwoBytes)operand);
+            operand = (Long)((Word)operand);
             if (operand > 0)
                 strncat(tmp, "+", sizeof(tmp) - len - 1);
             if (operand != 0) {
@@ -411,6 +428,7 @@ void disASMOPStrToBuf(TMV* mv, Register operand, Byte type, char* buf, size_t bu
     }
 }
 
+// Funcion principal del disassembler
 void disASM(TMV* mv) {
     int i;
     UByte ins = 0, typA = 0, typB = 0, typInsA = 0, typInsB = 0;
@@ -462,11 +480,11 @@ void disASM(TMV* mv) {
 }
 
 //Decodificador de direccion logica a direccion fisica
-Register decodeAddr(TMV* mv, Register logical) {
-    TwoBytes segIndex, offset;
+Long decodeAddr(TMV* mv, Long logical) {
+    Word segIndex, offset;
 
-    segIndex = (TwoBytes) (logical >> 16);
-    offset = (TwoBytes) logical;
+    segIndex = (Word) (logical >> 16);
+    offset = (Word) logical;
 
     if (offset >= mv->seg[segIndex].size)
         errorHandler(mv, ERR_SEG);
@@ -475,47 +493,46 @@ Register decodeAddr(TMV* mv, Register logical) {
 }
 
 // Verifica si una dirección logica esta dentro de su segmento
-int inSegment(TMV* mv, Register logical) {
-    TwoBytes segIndex, offset;
+int inSegment(TMV* mv, Long logical) {
+    Word segIndex, offset;
 
-    segIndex = (TwoBytes) (logical >> 16);
-    offset = (TwoBytes) logical;
+    segIndex = (Word) (logical >> 16);
+    offset = (Word) logical;
 
     return offset < mv->seg[segIndex].size;
 }
 
 // Verifica si una dirección lógica está en CS
-int inCS(TMV* mv, Register logical) {
+int inCS(TMV* mv, Long logical) {
     return ((logical >> 16) == CS_SEG) && inSegment(mv, logical);
 }
 
 // Verifica si una dirección lógica está en DS
-int inDS(TMV* mv, Register logical) {
+int inDS(TMV* mv, Long logical) {
     return ((logical >> 16) == DS_SEG) && inSegment(mv, logical);
 }
 
-//Agarra un byte de instruccion, temp no hace falta, pero hace todo mas claro
-//Setea OPC, el tipo de OP1 y el tipo de OP2
+// Agarra un byte de instruccion. Setea OPC, el tipo de OP1 y el tipo de OP2
 void fetchInstruction(TMV* mv) {
     Byte temp;
 
     temp = mv->mem[decodeAddr(mv, mv->reg[IP])];
     mv->reg[OPC] = 0;
-    mv->reg[OPC] = (Register)(temp & MASKB_OPC);
+    mv->reg[OPC] = (Long)(temp & MASKB_OPC);
 
     mv->reg[OP1] = 0;
     mv->reg[OP2] = 0;
-    mv->reg[OP1] = (Register)(temp & MASKB_OP2) << 18;
+    mv->reg[OP1] = (Long)(temp & MASKB_OP2) << 18;
 
     if ((temp & MASKB_OP1) != 0) {              //Si hay dos operandos, mueve la OP1 a OP2 y agarra el tipo de OP1
         mv->reg[OP2] = mv->reg[OP1];
-        mv->reg[OP1] = (Register)(temp & MASKB_OP1) << 20;
+        mv->reg[OP1] = (Long)(temp & MASKB_OP1) << 20;
     }
 }
 
-//Crea un registro y lo devuelve a los operandos
-Register fetchOperand(TMV* mv, int bytes, int* offset) {
-    Register logical, physical, temp = 0, i = bytes;
+// Crea un registro para un operando y lo retorna
+Long fetchOperand(TMV* mv, int bytes, int* offset) {
+    Long logical, physical, temp = 0, i = bytes;
 
     while (i > 0 && mv->flag == 0) {
         logical = mv->reg[IP] + (*offset);
@@ -523,7 +540,7 @@ Register fetchOperand(TMV* mv, int bytes, int* offset) {
             errorHandler(mv, ERR_SEG);
         else {
             physical = decodeAddr(mv, logical);
-            temp |= ((Register)mv->mem[physical]) << (8 * (i - 1));
+            temp |= ((Long)mv->mem[physical]) << (8 * (i - 1));
             ++(*offset);
             i--;
         }
@@ -535,7 +552,7 @@ Register fetchOperand(TMV* mv, int bytes, int* offset) {
     return temp;
 }
 
-//Prepara a los operandos para que reciban su informacion
+// Prepara a los operandos para que reciban su informacion
 void fetchOperators(TMV* mv) {
     int op1Bytes, op2Bytes, offset = 1;
 
@@ -546,15 +563,15 @@ void fetchOperators(TMV* mv) {
         mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
 }
 
-//Seteo del valor del LAR cuando se trabaja con memoria
-void setLAR(TMV* mv, Register operand) {
+// Seteo del valor del LAR cuando se trabaja con memoria
+void setLAR(TMV* mv, Long operand) {
     Byte cod;
-    TwoBytes offset;
-    Register logical;
+    Word offset;
+    Long logical;
 
     if (mv->reg[OPC] != SYS) {
         cod = (Byte) ((operand & MASK_REG) >> 16);
-        offset = (TwoBytes) (operand & MASK_OFFSET);
+        offset = (Word) (operand & MASK_OFFSET);
         logical = mv->reg[cod] + offset;
     }
     else
@@ -564,9 +581,9 @@ void setLAR(TMV* mv, Register operand) {
     mv->reg[LAR] = logical;
 }
 
-//Seteo del valor del MAR cuando se trabaja con memoria
-void setMAR(TMV* mv, Register cantBytes, Register logical) {
-    Register physical;
+// Seteo del valor del MAR cuando se trabaja con memoria
+void setMAR(TMV* mv, Long cantBytes, Long logical) {
+    Long physical;
 
     if (mv->flag == 0) {
         physical = decodeAddr(mv, logical);
@@ -577,9 +594,9 @@ void setMAR(TMV* mv, Register cantBytes, Register logical) {
     }
 }
 
-//Get del valor de memoria al MBR
+// Get del valor de memoria al MBR
 void getMemory(TMV* mv) {
-    Register cantBytes, physical, temp;
+    Long cantBytes, physical, temp;
     int i;
 
     if (mv->flag == 0) {
@@ -588,16 +605,16 @@ void getMemory(TMV* mv) {
         temp = 0;
 
         for (i = 0; i < cantBytes; i++) {
-            temp |= (Register) mv->mem[physical + i] << (8 * (cantBytes - 1 - i));
+            temp |= (Long) mv->mem[physical + i] << (8 * (cantBytes - 1 - i));
         }
 
         mv->reg[MBR] = temp;
     }
 }
 
-//Set del valor del MBR a la memoria
+// Set del valor del MBR a la memoria
 void setMemory(TMV* mv) {
-    Register cantBytes, physical;
+    Long cantBytes, physical;
     int i;
 
     if (mv->flag == 0) {
@@ -609,10 +626,10 @@ void setMemory(TMV* mv) {
     }
 }
 
-//Decodificar el operador y devolver su valor
-Register getOP(TMV* mv, Register operand) {
+// Decodificar el operador y devolver su valor
+Long getOP(TMV* mv, Long operand) {
     Byte tipo = operand >> 24;
-    Register res;
+    Long res;
 
     operand &= MASK_UNTYPE;
 
@@ -636,8 +653,8 @@ Register getOP(TMV* mv, Register operand) {
     return res;
 }
 
-//Setear el registro o memoria de operadorA con el valor de operadorB
-void setOP(TMV* mv, Register operandA, Register operandB) {
+// Setear el registro o memoria de operadorA con el valor de operadorB
+void setOP(TMV* mv, Long operandA, Long operandB) {
     Byte tipo = operandA >> 24;
 
     operandA &= MASK_UNTYPE;
@@ -654,8 +671,8 @@ void setOP(TMV* mv, Register operandA, Register operandB) {
     }
 }
 
-//Setear el CC
-void setCC(TMV* mv, Register valor) {
+// Setear el CC
+void setCC(TMV* mv, Long valor) {
     if (valor == 0)
         mv->reg[CC] |= 0x40000000;
     else
@@ -667,35 +684,25 @@ void setCC(TMV* mv, Register valor) {
         mv->reg[CC] &= 0x7FFFFFFF;
 }
 
-// Recibe un número binario en complemento a 2 en formato String, y devulve su valor decimal
-Register binToDecC2(char *binStr) {
-    int len = strlen(binStr);
-    Register value = 0;
-
-    for (int i = 0; i < len; i++) {
-        value = (value << 1) | (binStr[i] - '0');
-    }
-
-    if (binStr[0] == '1') {
-        value -= (1 << len);
-    }
-
-    return value;
-}
-
-//SYS Read
-void fsysRead(TMV* mv) {
-    Register read = 0;
+// SYS Read
+void fsysRead(TMV* mv, int cantBytes) {
+    Long read = 0;
     char car, binStr[33];
-    int cantBytes, i;
+    int i;
 
-    cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
-
-    printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
+    printf(" ");
     switch (mv->reg[EAX]) {
         case 16:
             scanf("%32s", binStr);
-            read = binToDecC2(binStr);
+            // Leer binario como string, solo cantBytes bits
+            read = 0;
+            for (i = 0; i < cantBytes * 8 && binStr[i]; i++) {
+                read = (read << 1) | (binStr[i] - '0');
+            }
+            // Si el bit más alto está en 1, hacer complemento a 2 para ese tamaño
+            if (binStr[0] == '1') {
+                read -= (1 << (cantBytes * 8));
+            }
             break;
         case 8:
             scanf("%X", &read);
@@ -704,10 +711,10 @@ void fsysRead(TMV* mv) {
             scanf("%o", &read);
             break;
         case 2:
-            // Leer varios caracteres y empaquetar en Register (de más significativo a menos)
+            read = 0;
             for (i = cantBytes - 1; i >= 0; i--) {
                 scanf(" %c", &car);
-                read |= ((Register)car) << (8 * i);
+                read |= ((Long)car) << (8 * i);
             }
             break;
         case 1:
@@ -721,11 +728,11 @@ void fsysRead(TMV* mv) {
 }
 
 // Recibe un número decimal y devulve su representación binaria en complemento a 2 en formato String
-void decToBinC2(Register value, char *binStr) {
-    URegister uValue;
+void decToBinC2(Long value, char *binStr) {
+    ULong uValue;
     int bitIndex, stringPos, firstOneFound, bit;
 
-    uValue = (URegister)value;
+    uValue = (ULong)value;
     stringPos = 0;
     firstOneFound = 0;
     bitIndex = 31;
@@ -761,15 +768,13 @@ void decToBinC2(Register value, char *binStr) {
 }
 
 //SYS Write
-void fsysWrite(TMV* mv) {
-    Register write;
+void fsysWrite(TMV* mv, int cantBytes) {
+    Long write;
     char binStr[33];
-    int cantBytes, i;
+    int i;
 
     getMemory(mv);
     write = mv->reg[MBR];
-    cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
-    printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
 
     if (mv->reg[EAX] & 0x10) {
         decToBinC2(write, binStr);
@@ -793,7 +798,8 @@ void fsysWrite(TMV* mv) {
     printf("\n");
 }
 
-//Funcion SYS
+
+// Funcion SYS - Llamadas al sistema
 void fsys(TMV* mv) {
     int cantCeldas, cantBytes, i = 0;
 
@@ -805,20 +811,23 @@ void fsys(TMV* mv) {
         setMAR(mv, cantBytes, mv->reg[LAR]);
 
         if (mv->flag == 0) {
+            printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
+
             switch (getOP(mv, mv->reg[OP1])) {
                 case 1:
-                    fsysRead(mv);
+                    fsysRead(mv, cantBytes);
                     break;
                 case 2:
-                    fsysWrite(mv);
+                    fsysWrite(mv, cantBytes);
                     break;
             }
+
             i++;
         }
     }
 }
 
-//Salto con posibilidad de condicion
+// Funcion principal de salto
 void fjmp(TMV* mv, int salto) {
     if (salto) {
         mv->reg[IP] &= MASK_LDH;
@@ -826,62 +835,62 @@ void fjmp(TMV* mv, int salto) {
     }
 }
 
-//Boolean para indicar si saltar por cero
+// Boolean para indicar si saltar por cero
 int fjz(TMV* mv) {
     return mv->reg[CC] & CC_Z;
 }
 
-//Boolean para indicar si saltar por negativo
+// Boolean para indicar si saltar por negativo
 int fjn(TMV* mv) {
     return mv->reg[CC] & CC_N;
 }
 
-//Instruccion NOT bit a bit
+// Instruccion NOT - Niega bit a bit
 void fnot(TMV* mv) {
-    Register res;
+    Long res;
     res = ~ getOP(mv, mv->reg[OP1]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion STOP
+// Instruccion STOP - Setea IP a STOP_VALUE
 void fstop(TMV* mv) {
     mv->reg[IP] = STOP_VALUE;
 }
 
-//Instruccion MOV
+// Instruccion MOV - Setea el valor de OP2 a donde le indica OP1
 void fmov(TMV* mv) {
     setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
 }
 
-//Instruccion ADD
+// Instruccion ADD - Suma los valores de OP1 y OP2 y setea el resultado en donde indica OP1. Setea CC
 void fadd(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) + getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion SUB (y CMP)
+// Instruccion SUB - Resta los valores de OP1 y OP2. Si se llamo por SUB y no por CMP, setea el resultado en donde indica OP1. Setea CC
 void fsub(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) - getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     if (mv->reg[OPC] == SUB)
         setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion MUL
+// Instruccion MUL - Multiplicas los valores de OP1 y OP2 y setea el resultado en donde indica OP1. Setea CC
 void fmul(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) * getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion DIV
+// Instruccion DIV - Divide los valores de OP1 y OP2 y setea el resultado en donde indica OP1. Setea el resto en AC. Setea CC
 void fdiv(TMV* mv) {
-    Register res;
+    Long res;
     if (getOP(mv, mv->reg[OP2]) == 0)
         errorHandler(mv, ERR_DIV0);
     else {
@@ -892,65 +901,65 @@ void fdiv(TMV* mv) {
     }
 }
 
-//Desplazamientos de bits a izquierda
+// Instruccion SHL - Desplazamientos de bits a izquierda. Setea CC
 void fshl(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) << getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Desplazamientos de bits a derecha
+// Instruccion SHR - Desplazamientos de bits a derecha. Setea CC
 void fshr(TMV* mv) {
-    Register res;
-    res = (Register) ((uint32_t) getOP(mv, mv->reg[OP1]) >> getOP(mv, mv->reg[OP2]));
+    Long res;
+    res = (Long) ((uint32_t) getOP(mv, mv->reg[OP1]) >> getOP(mv, mv->reg[OP2]));
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Desplazamientos de bits a derecha pero propaga signo
+// Instruccion SAR - Desplazamientos de bits a derecha pero propaga signo. Setea CC
 void fsar(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) >> getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion AND bit a bit
+// Instruccion AND - Operacion logica AND bit a bit. Setea CC
 void fand(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) & getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion OR bit a bit
+// Instruccion OR - Operacion logica OR bit a bit. Setea CC
 void f_or(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) | getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Instruccion XOR bit a bit
+// Instruccion XOR - Operacion logica XOR bit a bit. Setea CC
 void fxor(TMV* mv) {
-    Register res;
+    Long res;
     res = getOP(mv, mv->reg[OP1]) ^ getOP(mv, mv->reg[OP2]);
     setCC(mv, res);
     setOP(mv, mv->reg[OP1], res);
 }
 
-//Intruccion SWAP para cambiar de lugar operandos
+// Intruccion SWAP - Intercambia valores de los operandos
 void fswap(TMV* mv) {
-    Register aux = 0;
+    Long aux = 0;
     aux = getOP(mv, mv->reg[OP1]);
     setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
     setOP(mv, mv->reg[OP2], aux);
 }
 
-//Instruccion LDL para hacer carga baja
+// Instruccion LDL - Carga los 2 bytes menos significatidos del OP1 con los dos bytes menos significativos del OP2
 void fldl(TMV* mv) {
-    Register cargaBaja, cod;
+    Long cargaBaja, cod;
     UByte tipo;
 
     cargaBaja = getOP(mv, mv->reg[OP2]) & MASK_LDL;
@@ -970,9 +979,9 @@ void fldl(TMV* mv) {
     }
 }
 
-//Instruccion LDH para hacer carga alta
+// Instruccion LDH - Carga los 2 bytes mas significatidos del OP1 con los dos bytes menos significativos del OP2
 void fldh(TMV* mv) {
-    Register cargaAlta, cod;
+    Long cargaAlta, cod;
     UByte tipo;
 
     cargaAlta = (getOP(mv, mv->reg[OP2]) & MASK_LDL) << 16;
@@ -992,9 +1001,9 @@ void fldh(TMV* mv) {
     }
 }
 
-//Instruccion RND para dar un numero random
+// Instruccion RND - Setea en donde indica OP1 un numero random entre 0 y el valor de OP2
 void frnd(TMV* mv) {
-    Register max, randN;
+    Long max, randN;
     int r, lim;
 
     max = getOP(mv, mv->reg[OP2]);
@@ -1005,7 +1014,7 @@ void frnd(TMV* mv) {
         do {
             r = rand();
         } while (r >= lim);
-        randN = (Register) (r % max);
+        randN = (Long) (r % max);
     }
     setOP(mv, mv->reg[OP1], randN);
 }
