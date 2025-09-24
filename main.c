@@ -383,6 +383,7 @@ void initializationReg(TMV* mv) {
     mv->reg[CS] = CS_INI;
     mv->reg[DS] = DS_INI;
     mv->reg[IP] = mv->reg[CS];
+    mv->reg[CC] = 0;
 }
 
 // Funcion para transformar un operando a bytes para el disassembler
@@ -783,7 +784,7 @@ void fsysWrite(TMV* mv, int cantBytes) {
     if (mv->reg[EAX] & 0x08)
         printf(" 0x%X", write);
     if (mv->reg[EAX] & 0x04)
-        printf(" 0c%o", write);
+        printf(" 0o%o", write);
     if (mv->reg[EAX] & 0x02) {
         printf(" ");
         // Imprime cada byte como caracter, de más significativo a menos
