@@ -327,9 +327,6 @@ void executeProgram(TMV* mv) {
             instrTable[mv->reg[OPC]](mv);
         }
     }
-
-    if (!(inCS(mv, mv->reg[IP])) && mv->reg[OPC] != STOP)
-        errorHandler(mv, ERR_SEG);
 }
 
 // Manejo de errores
@@ -383,7 +380,6 @@ void initializationReg(TMV* mv) {
     mv->reg[CS] = CS_INI;
     mv->reg[DS] = DS_INI;
     mv->reg[IP] = mv->reg[CS];
-    mv->reg[CC] = 0;
 }
 
 // Funcion para transformar un operando a bytes para el disassembler
@@ -771,7 +767,7 @@ void decToBinC2(Long value, char *binStr) {
 //SYS Write
 void fsysWrite(TMV* mv, int cantBytes) {
     Long write;
-    char binStr[33];
+    char c, binStr[33];
     int i;
 
     getMemory(mv);
@@ -789,8 +785,11 @@ void fsysWrite(TMV* mv, int cantBytes) {
         printf(" ");
         // Imprime cada byte como caracter, de más significativo a menos
         for (i = cantBytes - 1; i >= 0; i--) {
-            char c = (char)((write >> (8 * i)) & 0xFF);
-            printf("%c", c);
+            c = (char)((write >> (8 * i)) & 0xFF);
+            if (32 <= c && c <= 126)
+                printf("%c", c);
+            else
+                printf(".");
         }
     }
     if (mv->reg[EAX] & 0x01)
