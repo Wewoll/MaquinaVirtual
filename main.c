@@ -101,10 +101,11 @@ static const char* errorMsgs[] = {
 typedef enum {
     LAR = 0, MAR, MBR,
     IP = 3, OPC, OP1, OP2,
+    SP = 7, BP,
     EAX = 10, EBX, ECX, EDX, EEX, EFX,
     AC = 16,
     CC = 17,
-    CS = 26, DS
+    CS = 26, DS, ES, SS, KS, PS
 } RegName;
 
 // Vector de nombres de registros
@@ -146,7 +147,8 @@ static const char* regStr[32] = {
 // Enumeracion de instrucciones
 typedef enum {
     SYS = 0x00, JMP, JZ, JP, JN, JNZ, JNP, JNN, NOT,
-    STOP = 0x0F,
+    PUSH = 0x0B, POP, CALL,
+    RET = 0x0E, STOP,
     MOV = 0x10, ADD, SUB, MUL, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
 } OpCode;
 
@@ -163,10 +165,10 @@ static const char* opStr[32] = {
     "NOT",      // 0x08
     "INVALID",  // 0x09
     "INVALID",  // 0x0A
-    "INVALID",  // 0x0B
-    "INVALID",  // 0x0C
-    "INVALID",  // 0x0D
-    "INVALID",  // 0x0E
+    "PUSH",     // 0x0B
+    "POP",      // 0x0C
+    "CALL",     // 0x0D
+    "RET",      // 0x0E
     "STOP",     // 0x0F
     "MOV",      // 0x10
     "ADD",      // 0x11
@@ -208,6 +210,7 @@ int inDS(TMV* mv, Long logical);
 void fetchInstruction(TMV* mv);
 Long fetchOperand(TMV* mv, int bytes, int* offset);
 void fetchOperators(TMV* mv);
+void addIP(TMV* mv);
 
 // Prototipos de memoria
 void setLAR(TMV* mv, Long operand);
@@ -215,82 +218,127 @@ void setMAR(TMV* mv, Long cantBytes, Long logical);
 void getMemory(TMV* mv);
 void setMemory(TMV* mv);
 
-// Prototipos centrados a instrucciones
+// Prototipos centrados a operadores
 Long getOP(TMV* mv, Long operand);
 void setOP(TMV* mv, Long operandA, Long operandB);
 void setCC(TMV* mv, Long valor);
-void fsysRead(TMV* mv, int cantBytes);
-void fsysWrite(TMV* mv, int cantBytes);
-void fsys(TMV* mv);
-void fjmp(TMV* mv, int salto);
-int fjz(TMV* mv);
-int fjn(TMV* mv);
-void fnot(TMV* mv);
-void fstop(TMV* mv);
-void fmov(TMV* mv);
-void fadd(TMV* mv);
-void fsub(TMV* mv);
-void fmul(TMV* mv);
-void fdiv(TMV* mv);
-void fshl(TMV* mv);
-void fshr(TMV* mv);
-void fsar(TMV* mv);
-void fand(TMV* mv);
-void f_or(TMV* mv);
-void fxor(TMV* mv);
-void fswap(TMV* mv);
-void fldl(TMV* mv);
-void fldh(TMV* mv);
-void frnd(TMV* mv);
 
-// Puntero a funcion de las instrucciones
-typedef void (*InstrFunc)(TMV*);
+// Prototipos de SYS
+void fsys(TMV* mv, Long* value1, Long* value2);
+void fsysRead(TMV* mv);
+void decToBinC2(Long value, char *binStr);
+void fsysWrite(TMV* mv);
+void fsysStrread(TMV* mv);
+void fsysStrwrite(TMV* mv);
+void fsysClrscr(TMV* mv);
+void fsysBreak(TMV* mv);
 
-// Wrappers para instrucciones de salto y errores
-void instr_jmp(TMV* mv)      { fjmp(mv, 1); }
-void instr_jz(TMV* mv)       { fjmp(mv, fjz(mv)); }
-void instr_jp(TMV* mv)       { fjmp(mv, !(fjz(mv)) && !(fjn(mv))); }
-void instr_jn(TMV* mv)       { fjmp(mv, fjn(mv)); }
-void instr_jnz(TMV* mv)      { fjmp(mv, !fjz(mv)); }
-void instr_jnp(TMV* mv)      { fjmp(mv, fjz(mv) || fjn(mv)); }
-void instr_jnn(TMV* mv)      { fjmp(mv, !fjn(mv)); }
-void instr_invalid(TMV* mv)  { errorHandler(mv, ERR_INS); }
+// Prototipos de las instrucciones
+void fmsl(TMV* mv, Long* value1, Long* value2);
+Long fjz(TMV* mv);
+Long fjn(TMV* mv);
+void fnot(TMV* mv, Long* value1, Long* value2);
+void fstop(TMV* mv, Long* value1, Long* value2);
+void fmov(TMV* mv, Long* value1, Long* value2);
+void fadd(TMV* mv, Long* value1, Long* value2);
+void fsub(TMV* mv, Long* value1, Long* value2);
+void fmul(TMV* mv, Long* value1, Long* value2);
+void fdiv(TMV* mv, Long* value1, Long* value2);
+void fshl(TMV* mv, Long* value1, Long* value2);
+void fshr(TMV* mv, Long* value1, Long* value2);
+void fsar(TMV* mv, Long* value1, Long* value2);
+void fand(TMV* mv, Long* value1, Long* value2);
+void f_or(TMV* mv, Long* value1, Long* value2);
+void fxor(TMV* mv, Long* value1, Long* value2);
+void fswap(TMV* mv, Long* value1, Long* value2);
+void fldl(TMV* mv, Long* value1, Long* value2);
+void fldh(TMV* mv, Long* value1, Long* value2);
+void frnd(TMV* mv, Long* value1, Long* value2);
 
-// Tabla de punteros a funciones
-InstrFunc instrTable[32] = {
-    fsys,           // 0x00 SYS
-    instr_jmp,      // 0x01 JMP
-    instr_jz,       // 0x02 JZ
-    instr_jp,       // 0x03 JP
-    instr_jn,       // 0x04 JN
-    instr_jnz,      // 0x05 JNZ
-    instr_jnp,      // 0x06 JNP
-    instr_jnn,      // 0x07 JNN
-    fnot,           // 0x08 NOT
-    instr_invalid,  // 0x09
-    instr_invalid,  // 0x0A
-    instr_invalid,  // 0x0B
-    instr_invalid,  // 0x0C
-    instr_invalid,  // 0x0D
-    instr_invalid,  // 0x0E
-    fstop,          // 0x0F STOP
-    fmov,           // 0x10 MOV
-    fadd,           // 0x11 ADD
-    fsub,           // 0x12 SUB
-    fmul,           // 0x13 MUL
-    fdiv,           // 0x14 DIV
-    fsub,           // 0x15 CMP (es sub, pero sin set)
-    fshl,           // 0x16 SHL
-    fshr,           // 0x17 SHR
-    fsar,           // 0x18 SAR
-    fand,           // 0x19 AND
-    f_or,           // 0x1A OR
-    fxor,           // 0x1B XOR
-    fswap,          // 0x1C SWAP
-    fldl,           // 0x1D LDL
-    fldh,           // 0x1E LDH
-    frnd            // 0x1F RND
+// Intento nuevo de punteros
+typedef void (*InstrFunc)(TMV*, Long*, Long*);
+
+typedef struct {        // 0, 1 o 2
+    UByte fetchValue;     // Opcional: getOperand
+    InstrFunc execute;        // La función principal
+    UByte setearCC;             // Opcional: setCC
+    UByte setValue;       // Opcional: setOperand
+} Instruction;
+
+// Wrapper para error "Intruccion invalida"
+void finvalid(TMV* mv, Long* value1, Long* value2)  { errorHandler(mv, ERR_INS); }
+
+Instruction instrTable[32] = {
+    [SYS] =  { .fetchValue = 1, .execute = fsys, .setearCC = 0, .setValue = 0 },     // 0x00
+    [JMP] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x01
+    [JZ] =   { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x02
+    [JP] =   { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x03
+    [JN] =   { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x04
+    [JNZ] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x05
+    [JNP] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x06
+    [JNN] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x07
+    [NOT] =  { .fetchValue = 1, .execute = fnot, .setearCC = 1, .setValue = 1 },     // 0x08
+
+    [9]   =  { .fetchValue = 0, .execute = finvalid, .setearCC = 0, .setValue = 0 }, // 0x09
+    [10]  =  { .fetchValue = 0, .execute = finvalid, .setearCC = 0, .setValue = 0 }, // 0x0A
+
+    //[PUSH] = { .fetchValue = 1, .execute = fpush, .setearCC = 0, .setValue = 0 },    // 0x0B
+    //[POP] =  { .fetchValue = 1, .execute = fpop, .setearCC = 0, .setValue = 0 },     // 0x0C
+    //[CALL] = { .fetchValue = 1, .execute = fcall, .setearCC = 0, .setValue = 0 },    // 0x0D
+
+    //[RET] =  { .fetchValue = 0, .execute = fret, .setearCC = 0, .setValue = 0 },     // 0x0E
+    [STOP] = { .fetchValue = 0, .execute = fstop, .setearCC = 0, .setValue = 0 },    // 0x0F
+
+    [MOV] =  { .fetchValue = 2, .execute = fmov, .setearCC = 0, .setValue = 1 },     // 0x10
+    [ADD] =  { .fetchValue = 2, .execute = fadd, .setearCC = 1, .setValue = 1 },     // 0x11
+    [SUB] =  { .fetchValue = 2, .execute = fsub, .setearCC = 1, .setValue = 1 },     // 0x12
+    [MUL] =  { .fetchValue = 2, .execute = fmul, .setearCC = 1, .setValue = 1 },     // 0x13
+    [DIV] =  { .fetchValue = 2, .execute = fdiv, .setearCC = 1, .setValue = 1 },     // 0x14
+    [CMP] =  { .fetchValue = 2, .execute = fsub, .setearCC = 1, .setValue = 0 },     // 0x15
+    [SHL] =  { .fetchValue = 2, .execute = fshl, .setearCC = 1, .setValue = 1 },     // 0x16
+    [SHR] =  { .fetchValue = 2, .execute = fshr, .setearCC = 1, .setValue = 1 },     // 0x17
+    [SAR] =  { .fetchValue = 2, .execute = fsar, .setearCC = 1, .setValue = 1 },     // 0x18
+    [AND] =  { .fetchValue = 2, .execute = fand, .setearCC = 1, .setValue = 1 },     // 0x19
+    [OR] =   { .fetchValue = 2, .execute = f_or, .setearCC = 1, .setValue = 1 },     // 0x1A
+    [XOR] =  { .fetchValue = 2, .execute = fxor, .setearCC = 1, .setValue = 1 },     // 0x1B
+    [SWAP] = { .fetchValue = 2, .execute = fswap, .setearCC = 0, .setValue = 2 },    // 0x1C
+    [LDL] =  { .fetchValue = 2, .execute = fldl, .setearCC = 0, .setValue = 1 },     // 0x1D
+    [LDH] =  { .fetchValue = 2, .execute = fldh, .setearCC = 0, .setValue = 1 },     // 0x1E
+    [RND] =  { .fetchValue = 2, .execute = frnd, .setearCC = 0, .setValue = 1 },     // 0x1F
 };
+
+typedef void (*SysFunc)(TMV*);
+
+SysFunc sysTable[16] = {
+    [0x01] = fsysRead,
+    [0x02] = fsysWrite,
+    //[0x03] = fsysStrread,
+    //[0x04] = fsysStrwrite,
+    //[0x07] = fsysClrscr,
+    //[0x0F] = fsysBreak,
+};
+
+typedef UByte (*CondFunc)(TMV*);
+
+UByte condTrue(TMV* mv) { return 1; }
+UByte condZ(TMV* mv)    { return fjz(mv); }
+UByte condP(TMV* mv)    { return !fjz(mv) && !fjn(mv); }
+UByte condN(TMV* mv)    { return fjn(mv); }
+UByte condNZ(TMV* mv)   { return !fjz(mv); }
+UByte condNP(TMV* mv)   { return fjz(mv) || fjn(mv); }
+UByte condNN(TMV* mv)   { return !fjn(mv); }
+
+CondFunc condVector[8] = {
+    [JMP] = condTrue,
+    [JZ]  = condZ,
+    [JP]  = condP,
+    [JN]  = condN,
+    [JNZ] = condNZ,
+    [JNP] = condNP,
+    [JNN] = condNN,
+};
+
+
 
 //  --- CODIGO ---
 // Lectura del archivo, disassambler y ejecucion
@@ -318,13 +366,34 @@ int main(int argc, char *argv[]) {
 
 // Flujo principal de ejecucion
 void executeProgram(TMV* mv) {
+    Instruction instr;
+    Long value1, value2;
+
     while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
         fetchInstruction(mv);
         fetchOperators(mv);
-        mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
+        addIP(mv);
+        instr = instrTable[mv->reg[OPC]];
 
-        if(mv->flag == 0) {
-            instrTable[mv->reg[OPC]](mv);
+        if (mv->flag == 0) {
+            if (instr.fetchValue > 0) {
+                value1 = getOP(mv, mv->reg[OP1]);
+                if (instr.fetchValue == 2)
+                    value2 = getOP(mv, mv->reg[OP2]);
+            }
+
+            instr.execute(mv, &value1, &value2);
+        }
+
+        if (mv->flag == 0) {
+            if (instr.setearCC == 1)
+                setCC(mv, value1);
+
+            if (instr.setValue > 0) {
+                setOP(mv, mv->reg[OP1], value1);
+                if (instr.setValue == 2)
+                    setOP(mv, mv->reg[OP2], value2);
+            }
         }
     }
 }
@@ -509,6 +578,10 @@ int inDS(TMV* mv, Long logical) {
     return ((logical >> 16) == DS_SEG) && inSegment(mv, logical);
 }
 
+void addIP(TMV* mv) {
+    mv->reg[IP] += (Long) (1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24));
+}
+
 // Agarra un byte de instruccion. Setea OPC, el tipo de OP1 y el tipo de OP2
 void fetchInstruction(TMV* mv) {
     Byte temp;
@@ -682,46 +755,58 @@ void setCC(TMV* mv, Long valor) {
 }
 
 // SYS Read
-void fsysRead(TMV* mv, int cantBytes) {
+void fsysRead(TMV* mv) {
     Long read = 0;
     char car, binStr[33];
-    int i;
+    int cantCeldas, cantBytes, i = 0, j = 0;
 
-    printf(" ");
-    switch (mv->reg[EAX]) {
-        case 16:
-            scanf("%32s", binStr);
-            // Leer binario como string, solo cantBytes bits
-            read = 0;
-            for (i = 0; i < cantBytes * 8 && binStr[i]; i++) {
-                read = (read << 1) | (binStr[i] - '0');
+    cantCeldas = mv->reg[ECX] & MASK_LDL;
+    cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
+
+    while (mv->flag == 0 && i < cantCeldas) {
+        setLAR(mv, mv->reg[EDX] + cantBytes * i);
+        setMAR(mv, cantBytes, mv->reg[LAR]);
+
+        if (mv->flag == 0) {
+            printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
+
+            switch (mv->reg[EAX]) {
+                case 16:
+                    scanf("%32s", binStr);
+                    // Leer binario como string, solo cantBytes bits
+                    read = 0;
+                    for (j = 0; j < cantBytes * 8 && binStr[j]; j++) {
+                        read = (read << 1) | (binStr[j] - '0');
+                    }
+                    // Si el bit más alto está en 1, hacer complemento a 2 para ese tamaño
+                    if (binStr[0] == '1') {
+                        read -= (1 << (cantBytes * 8));
+                    }
+                    break;
+                case 8:
+                    scanf("%X", &read);
+                    break;
+                case 4:
+                    scanf("%o", &read);
+                    break;
+                case 2:
+                    read = 0;
+                    for (j = cantBytes - 1; j >= 0; j--) {
+                        scanf(" %c", &car);
+                        read |= ((Long)car) << (8 * j);
+                    }
+                    break;
+                case 1:
+                    scanf("%d", &read);
+                    break;
+                default: break;
             }
-            // Si el bit más alto está en 1, hacer complemento a 2 para ese tamaño
-            if (binStr[0] == '1') {
-                read -= (1 << (cantBytes * 8));
-            }
-            break;
-        case 8:
-            scanf("%X", &read);
-            break;
-        case 4:
-            scanf("%o", &read);
-            break;
-        case 2:
-            read = 0;
-            for (i = cantBytes - 1; i >= 0; i--) {
-                scanf(" %c", &car);
-                read |= ((Long)car) << (8 * i);
-            }
-            break;
-        case 1:
-            scanf("%d", &read);
-            break;
-        default: break;
+
+            mv->reg[MBR] = read;
+            setMemory(mv);
+        }
+
     }
-
-    mv->reg[MBR] = read;
-    setMemory(mv);
 }
 
 // Recibe un número decimal y devulve su representación binaria en complemento a 2 en formato String
@@ -765,43 +850,10 @@ void decToBinC2(Long value, char *binStr) {
 }
 
 //SYS Write
-void fsysWrite(TMV* mv, int cantBytes) {
+void fsysWrite(TMV* mv) {
     Long write;
     char c, binStr[33];
-    int i;
-
-    getMemory(mv);
-    write = mv->reg[MBR];
-
-    if (mv->reg[EAX] & 0x10) {
-        decToBinC2(write, binStr);
-        printf(" 0b%s", binStr);
-    }
-    if (mv->reg[EAX] & 0x08)
-        printf(" 0x%X", write);
-    if (mv->reg[EAX] & 0x04)
-        printf(" 0o%o", write);
-    if (mv->reg[EAX] & 0x02) {
-        printf(" ");
-        // Imprime cada byte como caracter, de más significativo a menos
-        for (i = cantBytes - 1; i >= 0; i--) {
-            c = (char)((write >> (8 * i)) & 0xFF);
-            if (32 <= c && c <= 126)
-                printf("%c", c);
-            else
-                printf(".");
-        }
-    }
-    if (mv->reg[EAX] & 0x01)
-        printf(" %d", write);
-
-    printf("\n");
-}
-
-
-// Funcion SYS - Llamadas al sistema
-void fsys(TMV* mv) {
-    int cantCeldas, cantBytes, i = 0;
+    int cantCeldas, cantBytes, i = 0, j = 0;
 
     cantCeldas = mv->reg[ECX] & MASK_LDL;
     cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
@@ -809,212 +861,185 @@ void fsys(TMV* mv) {
     while (mv->flag == 0 && i < cantCeldas) {
         setLAR(mv, mv->reg[EDX] + cantBytes * i);
         setMAR(mv, cantBytes, mv->reg[LAR]);
+        getMemory(mv);
+        write = mv->reg[MBR];
 
         if (mv->flag == 0) {
             printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
 
-            switch (getOP(mv, mv->reg[OP1])) {
-                case 1:
-                    fsysRead(mv, cantBytes);
-                    break;
-                case 2:
-                    fsysWrite(mv, cantBytes);
-                    break;
+            if (mv->reg[EAX] & 0x10) {
+                decToBinC2(write, binStr);
+                printf(" 0b%s", binStr);
             }
+            if (mv->reg[EAX] & 0x08)
+                printf(" 0x%X", write);
+            if (mv->reg[EAX] & 0x04)
+                printf(" 0o%o", write);
+            if (mv->reg[EAX] & 0x02) {
+                printf(" ");
+                // Imprime cada byte como caracter, de más significativo a menos
+                for (j = cantBytes - 1; j >= 0; j--) {
+                    c = (char)((write >> (8 * j)) & 0xFF);
+                    if (32 <= c && c <= 126)
+                        printf("%c", c);
+                    else
+                        printf(".");
+                }
+            }
+            if (mv->reg[EAX] & 0x01)
+                printf(" %d", write);
 
-            i++;
+            printf("\n");
         }
+
+        i++;
     }
 }
 
-// Funcion principal de salto
-void fjmp(TMV* mv, int salto) {
-    if (salto) {
+
+// Funcion SYS - Llamadas al sistema
+void fsys(TMV* mv, Long* value1, Long* value2) {
+    if (sysTable[*value1]) {
+        sysTable[*value1](mv);
+    }
+}
+
+// Funcion de centralizada de logica de saltos
+void fmsl(TMV* mv, Long* value1, Long* value2) {
+    if (condVector[mv->reg[OPC]](mv)) {
         mv->reg[IP] &= MASK_LDH;
-        mv->reg[IP] |= (getOP(mv, mv->reg[OP1]) & MASK_LDL);
+        mv->reg[IP] |= (*value1 & MASK_LDL);
     }
 }
 
 // Boolean para indicar si saltar por cero
-int fjz(TMV* mv) {
+Long fjz(TMV* mv) {
     return mv->reg[CC] & CC_Z;
 }
 
 // Boolean para indicar si saltar por negativo
-int fjn(TMV* mv) {
+Long fjn(TMV* mv) {
     return mv->reg[CC] & CC_N;
 }
 
 // Instruccion NOT - Niega bit a bit
-void fnot(TMV* mv) {
-    Long res;
-    res = ~ getOP(mv, mv->reg[OP1]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+void fnot(TMV* mv, Long* value1, Long* value2) {
+    *value1 = ~ *value1;
 }
 
 // Instruccion STOP - Setea IP a STOP_VALUE
-void fstop(TMV* mv) {
+void fstop(TMV* mv, Long* value1, Long* value2) {
     mv->reg[IP] = STOP_VALUE;
 }
 
-// Instruccion MOV - Setea el valor de OP2 a donde le indica OP1
-void fmov(TMV* mv) {
-    setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
+// Instruccion MOV - Paso el valor de value2 a value1
+void fmov(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value2;
 }
 
-// Instruccion ADD - Suma los valores de OP1 y OP2 y setea el resultado en donde indica OP1. Setea CC
-void fadd(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) + getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion ADD - Suma los valores de value1 y value2
+void fadd(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 + *value2;
 }
 
-// Instruccion SUB - Resta los valores de OP1 y OP2. Si se llamo por SUB y no por CMP, setea el resultado en donde indica OP1. Setea CC
-void fsub(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) - getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    if (mv->reg[OPC] == SUB)
-        setOP(mv, mv->reg[OP1], res);
+// Instruccion SUB - Resta los valores de value1 y value2
+void fsub(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 - *value2;
 }
 
-// Instruccion MUL - Multiplicas los valores de OP1 y OP2 y setea el resultado en donde indica OP1. Setea CC
-void fmul(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) * getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion MUL - Multiplicas los valores de value1 y value2C
+void fmul(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 * *value2;
 }
 
-// Instruccion DIV - Divide los valores de OP1 y OP2 y setea el resultado en donde indica OP1. Setea el resto en AC. Setea CC
-void fdiv(TMV* mv) {
-    Long res;
-    if (getOP(mv, mv->reg[OP2]) == 0)
+// Instruccion DIV - Divide los valores de value1 y value2. Setea el resto en AC.
+void fdiv(TMV* mv, Long* value1, Long* value2) {
+    Long resto;
+
+    if (*value2 == 0)
         errorHandler(mv, ERR_DIV0);
     else {
-        res = getOP(mv, mv->reg[OP1]) / getOP(mv, mv->reg[OP2]);
-        mv->reg[AC] = getOP(mv, mv->reg[OP1]) % getOP(mv, mv->reg[OP2]);
-        setCC(mv, res);
-        setOP(mv, mv->reg[OP1], res);
+        *value1 = *value1 / *value2;
+        resto = *value1 % *value2;
+
+        if (resto < 0) {
+            if (*value2 > 0) {
+                *value1 -= 1;
+                resto += *value2;
+            }
+            else {
+                *value1 += 1;
+                resto -= *value2;
+            }
+        }
+
+        mv->reg[AC] = resto;
     }
 }
 
-// Instruccion SHL - Desplazamientos de bits a izquierda. Setea CC
-void fshl(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) << getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion SHL - Desplazamientos de bits a izquierda.
+void fshl(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 << *value2;
 }
 
-// Instruccion SHR - Desplazamientos de bits a derecha. Setea CC
-void fshr(TMV* mv) {
-    Long res;
-    res = (Long) ((uint32_t) getOP(mv, mv->reg[OP1]) >> getOP(mv, mv->reg[OP2]));
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion SHR - Desplazamientos de bits a derecha.
+void fshr(TMV* mv, Long* value1, Long* value2) {
+    *value1 = (Long) ((ULong) *value1 >> *value2);
 }
 
-// Instruccion SAR - Desplazamientos de bits a derecha pero propaga signo. Setea CC
-void fsar(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) >> getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion SAR - Desplazamientos de bits a derecha pero propaga signo.
+void fsar(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 >> *value2;
 }
 
-// Instruccion AND - Operacion logica AND bit a bit. Setea CC
-void fand(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) & getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion AND - Operacion logica AND bit a bit.
+void fand(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 & *value2;
 }
 
-// Instruccion OR - Operacion logica OR bit a bit. Setea CC
-void f_or(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) | getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion OR - Operacion logica OR bit a bit.
+void f_or(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 | *value2;
 }
 
-// Instruccion XOR - Operacion logica XOR bit a bit. Setea CC
-void fxor(TMV* mv) {
-    Long res;
-    res = getOP(mv, mv->reg[OP1]) ^ getOP(mv, mv->reg[OP2]);
-    setCC(mv, res);
-    setOP(mv, mv->reg[OP1], res);
+// Instruccion XOR - Operacion logica XOR bit a bit.
+void fxor(TMV* mv, Long* value1, Long* value2) {
+    *value1 = *value1 ^ *value2;
 }
 
-// Intruccion SWAP - Intercambia valores de los operandos
-void fswap(TMV* mv) {
+// Intruccion SWAP - Intercambia los valores de los value
+void fswap(TMV* mv, Long* value1, Long* value2) {
     Long aux = 0;
-    aux = getOP(mv, mv->reg[OP1]);
-    setOP(mv, mv->reg[OP1], getOP(mv, mv->reg[OP2]));
-    setOP(mv, mv->reg[OP2], aux);
+    aux = *value1;
+    *value1 = *value2;
+    *value2 = aux;
 }
 
-// Instruccion LDL - Carga los 2 bytes menos significatidos del OP1 con los dos bytes menos significativos del OP2
-void fldl(TMV* mv) {
-    Long cargaBaja, cod;
-    UByte tipo;
-
-    cargaBaja = getOP(mv, mv->reg[OP2]) & MASK_LDL;
-    tipo = mv->reg[OP1] >> 24;
-    cod = mv->reg[OP1] & MASK_UNTYPE;
-
-    switch (tipo) {
-        case 1:
-            mv->reg[cod] = (mv->reg[cod] & MASK_LDH) | cargaBaja;
-            break;
-        case 3:
-            setLAR(mv, cod);
-            setMAR(mv, 4, mv->reg[LAR]);
-            mv->reg[MBR] = (mv->reg[MBR] & MASK_LDH) | cargaBaja;
-            setMemory(mv);
-            break;
-    }
+// Instruccion LDL - Carga los 2 bytes menos significatidos del value1 con los dos bytes menos significativos del value2
+void fldl(TMV* mv, Long* value1, Long* value2) {
+    *value2 = *value2 & MASK_LDL;
+    *value1 = (*value1 & MASK_LDH) | *value2;
 }
 
-// Instruccion LDH - Carga los 2 bytes mas significatidos del OP1 con los dos bytes menos significativos del OP2
-void fldh(TMV* mv) {
-    Long cargaAlta, cod;
-    UByte tipo;
 
-    cargaAlta = (getOP(mv, mv->reg[OP2]) & MASK_LDL) << 16;
-    tipo = mv->reg[OP1] >> 24;
-    cod = mv->reg[OP1] & MASK_UNTYPE;
-
-    switch (tipo) {
-        case 1:
-            mv->reg[cod] = (mv->reg[cod] & MASK_LDL) | cargaAlta;
-            break;
-        case 3:
-            setLAR(mv, cod);
-            setMAR(mv, 4, mv->reg[LAR]);
-            mv->reg[MBR] = (mv->reg[MBR] & MASK_LDL) | cargaAlta;
-            setMemory(mv);
-            break;
-    }
+// Instruccion LDH - Carga los 2 bytes mas significatidos del value1 con los dos bytes menos significativos del value2
+void fldh(TMV* mv, Long* value1, Long* value2) {
+    *value2 = (*value2 & MASK_LDL) << 16;
+    *value1 = (*value1 & MASK_LDL) | *value2;
 }
 
-// Instruccion RND - Setea en donde indica OP1 un numero random entre 0 y el valor de OP2
-void frnd(TMV* mv) {
-    Long max, randN;
+// Instruccion RND - Setea en value1 con un numero random entre 0 y value2
+void frnd(TMV* mv, Long* value1, Long* value2) {
     int r, lim;
 
-    max = getOP(mv, mv->reg[OP2]);
-    if (max <= 1) {
-        randN = 0;
-    } else {
-        lim = RAND_MAX - (RAND_MAX % max);
+    if (*value2 <= 1) {
+        *value1 = 0;
+    }
+    else {
+        lim = RAND_MAX - (RAND_MAX % *value2);
         do {
             r = rand();
         } while (r >= lim);
-        randN = (Long) (r % max);
+        *value1 = (Long) (r % *value2);
     }
-    setOP(mv, mv->reg[OP1], randN);
 }
