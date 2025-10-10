@@ -318,15 +318,15 @@ SysFunc sysTable[16] = {
     //[0x0F] = fsysBreak,
 };
 
-typedef UByte (*CondFunc)(TMV*);
+typedef Long (*CondFunc)(TMV*);
 
-UByte condTrue(TMV* mv) { return 1; }
-UByte condZ(TMV* mv)    { return fjz(mv); }
-UByte condP(TMV* mv)    { return !fjz(mv) && !fjn(mv); }
-UByte condN(TMV* mv)    { return fjn(mv); }
-UByte condNZ(TMV* mv)   { return !fjz(mv); }
-UByte condNP(TMV* mv)   { return fjz(mv) || fjn(mv); }
-UByte condNN(TMV* mv)   { return !fjn(mv); }
+Long condTrue(TMV* mv) { return 1; }
+Long condZ(TMV* mv)    { return fjz(mv); }
+Long condP(TMV* mv)    { return !fjz(mv) && !fjn(mv); }
+Long condN(TMV* mv)    { return fjn(mv); }
+Long condNZ(TMV* mv)   { return !fjz(mv); }
+Long condNP(TMV* mv)   { return fjz(mv) || fjn(mv); }
+Long condNN(TMV* mv)   { return !fjn(mv); }
 
 CondFunc condVector[8] = {
     [JMP] = condTrue,
@@ -388,7 +388,6 @@ void executeProgram(TMV* mv) {
         if (mv->flag == 0) {
             if (instr.setearCC == 1)
                 setCC(mv, value1);
-
             if (instr.setValue > 0) {
                 setOP(mv, mv->reg[OP1], value1);
                 if (instr.setValue == 2)
@@ -806,6 +805,7 @@ void fsysRead(TMV* mv) {
             setMemory(mv);
         }
 
+        i++;
     }
 }
 
@@ -959,8 +959,8 @@ void fdiv(TMV* mv, Long* value1, Long* value2) {
     if (*value2 == 0)
         errorHandler(mv, ERR_DIV0);
     else {
-        *value1 = *value1 / *value2;
         resto = *value1 % *value2;
+        *value1 = *value1 / *value2;
 
         if (resto < 0) {
             if (*value2 > 0) {
