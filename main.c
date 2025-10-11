@@ -9,7 +9,7 @@
 #define RAM_KIB         16                   // Maximo de RAM en KiB
 #define RAM_MAX         (RAM_KIB * 1024)     // Maximo de RAM en Bytes
 #define REG_AMOUNT      32                   // 32 Registros
-#define SEG_AMOUNT      6                    // 6 Descriptores de segmentos
+#define SEG_AMOUNT      8                    // 6 Descriptores de segmentos
 #define SEG_MAXSIZE     65535                // 2^16 tamano maximo de segmento
 
 // Cantidad de segmentos en base al mapa del layout de la memoria
@@ -61,15 +61,6 @@ typedef struct {
     UWord size;   // tamaño del segmento en bytes
 } TableSeg;
 
-// Maquina Virtual
-typedef struct {
-    UByte*     mem;                 // Memoria dinamica
-    ULong      totalMemorySize;     // Tamaño total de la memoria en bytes
-    Long       reg[REG_AMOUNT];     // 32 registros de 4 bytes
-    TableSeg   seg[SEG_AMOUNT];     // Tabla de segmentos
-    UByte      flag;                // Error flag
-} TMV;
-
 // Estructura para almacenar los parámetros de la línea de comandos
 typedef struct {
     char*       vmxPath;
@@ -78,7 +69,17 @@ typedef struct {
     Byte        disassemblerFlag;
     Long        paramsArgc;          // Cantidad de parámetros para el programa
     char**      paramsArgv;          // Puntero a los parámetros en el argv original
-} VMConfig;
+} MVConfig;
+
+// Maquina Virtual
+typedef struct {
+    UByte*     mem;                 // Memoria dinamica
+    ULong      totalMemorySize;     // Tamaño total de la memoria en bytes
+    Long       reg[REG_AMOUNT];     // 32 registros de 4 bytes
+    TableSeg   seg[SEG_AMOUNT];     // Tabla de segmentos
+    MVConfig   config;              // Configuracion de la MV
+    UByte      flag;                // Error flag
+} TMV;
 
 // Almacena los tamaños de los segmentos leídos del header del .vmx
 typedef struct {
@@ -222,11 +223,12 @@ static const char* opStr[32] = {
 // --- Prototipos ---
 void executeProgram(TMV* mv);
 void errorHandler(TMV* mv, int err);
-void parseCommandLine(int argc, char* argv[], VMConfig* config, TMV* mv);
-void readProgramHeader(TMV* mv, const char* filename, SegmentSizes* segSizes, UWord* offsetEP)
-void loadProgramData(TMV* mv, const char* filename, SegmentSizes* segSizes);
+void parseCommandLine(int argc, char* argv[], TMV* mv);
+void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP)
+void loadProgramData(TMV* mv, SegmentSizes* segSizes);
 ULong sumSegSizes(SegmentSizes* segSizes);
-ULong calculatePSSize(VMConfig* config);
+ULong calculatePSSize(TMV* mv);
+void createParamSegment(TMV* mv);
 void initializeTable(TMV* mv, SegmentSizes* segSizes);
 void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP);
 
@@ -290,7 +292,7 @@ void fldl(TMV* mv, Long* value1, Long* value2);
 void fldh(TMV* mv, Long* value1, Long* value2);
 void frnd(TMV* mv, Long* value1, Long* value2);
 
-// Intento nuevo de punteros
+// Puntero a funciones de instruccion
 typedef void (*InstrFunc)(TMV*, Long*, Long*);
 
 typedef struct {
@@ -342,6 +344,7 @@ static const Instruction instrTable[32] = {
     [RND] =  { .fetchValue = 2, .execute = frnd, .setearCC = 0, .setValue = 1 },     // 0x1F
 };
 
+// Puntero a funciones del SYS
 typedef void (*SysFunc)(TMV*);
 
 static const SysFunc sysTable[16] = {
@@ -350,9 +353,10 @@ static const SysFunc sysTable[16] = {
     //[0x03] = fsysStrread,
     //[0x04] = fsysStrwrite,
     //[0x07] = fsysClrscr,
-    //[0x0F] = fsysBreak,
+    [0x0F] = fsysBreak,
 };
 
+// Puntero a funciones de condicion
 typedef Long (*CondFunc)(TMV*);
 
 // Wrappers de salto
@@ -382,7 +386,6 @@ static const CondFunc condVector[8] = {
  */
 int main(int argc, char *argv[]) {
     TMV mv;
-    VMConfig config;
     SegmentSizes segSizes;
     UWord offsetEP;
     ULong psSize;
@@ -390,63 +393,67 @@ int main(int argc, char *argv[]) {
     mv.flag = 0;
     srand(time(NULL));      // Para la instruccion RND
 
-    // Inicializacion en 0 de tamanos de segmentos
-    segSizes.codeSegSize = 0;
-    segSizes.dataSegSize = 0;
-    segSizes.extraSegSize = 0;
-    segSizes.stackSegSize = 0;
-    segSizes.constSegSize = 0;
-    segSizes.paramSegSize = 0;
-
-    // Inicializacion en 0 del Entry Point
-    offsetEP = 0;
-
     // Parsear los argumentos y llenar la estructura config
-    parseCommandLine(argc, argv, &config, &mv);
+    parseCommandLine(argc, argv, &mv);
 
     if (mv.flag == 0) {
         // --- RESERVA DE MEMORIA DINÁMICA ---
-        mv.totalMemorySize = config.memoryKiB * 1024;
-        mv.mem = (UByte*)malloc(mv.totalMemorySize);
-        
+        mv.totalMemorySize = mv.config.memoryKiB * 1024;
+        mv.mem = (UByte*) malloc(mv.totalMemorySize);
+
         if (mv.mem == NULL)
             errorHandler(&mv, ERR_MEM);
         else {
             // --- Lógica de Carga ---
             // Calcular el size de PS
-            psSize = calculatePSSize(&config);
+            psSize = calculatePSSize(&mv);
             if (psSize > SEG_MAXSIZE)
                 errorHandler(&mv, ERR_MEM);
             else {
                 segSizes.paramSegSize = psSize;
+                createParamSegment(&mv);
 
                 // Si hay un .vmx, se carga el programa
-                if (config.vmxPath != NULL) {
-                    readProgramHeader(&mv, config.vmxPath, &segSizes, &offsetEP);
+                if (mv.config.vmxPath != NULL) {
+                    // Inicializacion en 0 de tamanos de segmentos
+                    segSizes.extraSegSize = 0;
+                    segSizes.stackSegSize = 0;
+                    segSizes.constSegSize = 0;
 
+                    // Inicializacion en 0 del Entry Point
+                    offsetEP = 0;
+
+                    // Lectura del header del .vmx
+                    readProgramHeader(&mv, &segSizes, &offsetEP);
+
+                    // Suma de los sizes para ver si sobrepasan el total de memoria
                     if (sumSegSizes(&segSizes) > mv.totalMemorySize)
                         errorHandler(mv, ERR_MEM);
                     else {
+                        // Inicializaciones de tabla de segmentos y registros
                         initializeTable(&mv, &segSizes);
                         initializeRegisters(&mv, &segSizes, offsetEP);
-                        createParamSegment(&mv, &config);
-                        loadProgramData(&mv, config.vmxPath, &segSizes);
+
+                        // Carga de memoria
+                        loadProgramData(&mv, &segSizes);
                     }
                 }
+
                 // Si no hay .vmx pero sí .vmi, se carga la imagen
-                else if (config.vmiPath != NULL) {
-                    // Función a implementar:
-                    readImage(&mv, config.vmiPath);
+                else if (mv.config.vmiPath != NULL) {
+                    readImage(&mv);
                 }
             }
 
             // --- Lógica de Ejecución ---
             if (mv.flag == 0) {
-                // El disassembler se activa si está el flag Y si se cargó un .vmx
-                if (config.vmxPath != NULL && config.disassemblerFlag) {
-                    disASM(&mv); // Tu disassembler actual (necesitará updates para la Parte 2)
+                // Disassambler
+                if (mv.config.disassemblerFlag) {
+                    disASM(&mv);
                 }
-                executeProgram(&mv, config.vmiPath, offsetEP); // Pasamos el path para los breakpoints
+
+                // Ejecucion del programa
+                executeProgram(&mv);
             }
         }
     }
@@ -461,33 +468,40 @@ int main(int argc, char *argv[]) {
 
 // Flujo principal de ejecucion
 void executeProgram(TMV* mv) {
+    //fpush
+    //fpush(mv, mv->config.paramArgc, 0);
+    //fpush(mv, -1, 0);
+    while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
+        executeOneInstruction(mv);
+    }
+}
+
+void executeOneInstruction(TMV* mv) {
     Instruction instr;
     Long value1, value2;
 
-    while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
-        fetchInstruction(mv);
-        fetchOperators(mv);
-        addIP(mv);
-        instr = instrTable[mv->reg[OPC]];
+    fetchInstruction(mv);
+    fetchOperators(mv);
+    addIP(mv);
+    instr = instrTable[mv->reg[OPC]];
 
-        if (mv->flag == 0) {
-            if (instr.fetchValue > 0) {
-                value1 = getOP(mv, mv->reg[OP1]);
-                if (instr.fetchValue == 2)
-                    value2 = getOP(mv, mv->reg[OP2]);
-            }
-
-            instr.execute(mv, &value1, &value2);
+    if (mv->flag == 0) {
+        if (instr.fetchValue > 0) {
+            value1 = getOP(mv, mv->reg[OP1]);
+            if (instr.fetchValue == 2)
+                value2 = getOP(mv, mv->reg[OP2]);
         }
 
-        if (mv->flag == 0) {
-            if (instr.setearCC == 1)
-                setCC(mv, value1);
-            if (instr.setValue > 0) {
-                setOP(mv, mv->reg[OP1], value1);
-                if (instr.setValue == 2)
-                    setOP(mv, mv->reg[OP2], value2);
-            }
+        instr.execute(mv, &value1, &value2);
+    }
+
+    if (mv->flag == 0) {
+        if (instr.setearCC == 1)
+            setCC(mv, value1);
+        if (instr.setValue > 0) {
+            setOP(mv, mv->reg[OP1], value1);
+            if (instr.setValue == 2)
+                setOP(mv, mv->reg[OP2], value2);
         }
     }
 }
@@ -503,56 +517,56 @@ void errorHandler(TMV* mv, int err) {
  /**
  * @brief Parsea la informacion recibida por parametros en config
  */
-void parseCommandLine(int argc, char* argv[], VMConfig* config, TMV* mv) {
+void parseCommandLine(int argc, char* argv[], TMV* mv) {
     int i;
 
     // Inicializar con valores por defecto
-    config->vmxPath = NULL;
-    config->vmiPath = NULL;
-    config->memoryKiB = RAM_KIB;
-    config->disassemblerFlag = 0;
-    config->paramsArgc = 0;
-    config->paramsArgv = NULL;
+    mv->config.vmxPath = NULL;
+    mv->config.vmiPath = NULL;
+    mv->config.memoryKiB = RAM_KIB;
+    mv->config.disassemblerFlag = 0;
+    mv->config.paramsArgc = 0;
+    mv->config.paramsArgv = NULL;
 
     // Iterar y parsear
     for (i = 1; i < argc; i++) {
         if (strstr(argv[i], ".vmx")) {
-            config->vmxPath = argv[i];
+            mv->config.vmxPath = argv[i];
         }
         else if (strstr(argv[i], ".vmi")) {
-            config->vmiPath = argv[i];
+            mv->config.vmiPath = argv[i];
         }
         else if (strncmp(argv[i], "m=", 2) == 0) {
-            sscanf(argv[i], "m=%d", &config->memoryKiB);
+            sscanf(argv[i], "m=%d", &mv->config.memoryKiB);
         }
         else if (strcmp(argv[i], "-d") == 0) {
-            config->disassemblerFlag = 1;
+            mv->config.disassemblerFlag = 1;
         }
         else if (strcmp(argv[i], "-p") == 0) {
-            config->paramsArgc = argc - (i + 1);
-            config->paramsArgv = &argv[i + 1];
+            mv->config.paramsArgc = argc - (i + 1);
+            mv->config.paramsArgv = &argv[i + 1];
         }
     }
 
 
     // Validar
-    if (config->vmxPath == NULL && config->vmiPath == NULL) {
+    if (mv->config.vmxPath == NULL && mv->config.vmiPath == NULL) {
         errorHandler(mv, ERR_EXE);
     }
-    else if (config->vmxPath == NULL) {
-        config->paramsArgc = 0; // Se ignoran los parámetros -p si no hay .vmx
-        config->paramsArgv = NULL;
+    else if (mv->config.vmxPath == NULL) {
+        mv->config.paramsArgc = 0; // Se ignoran los parámetros -p si no hay .vmx
+        mv->config.paramsArgv = NULL;
     }
 }
 
  /**
  * @brief Lee solo el HEADER de un archivo .vmx para obtener los tamaños de los segmentos (y el offsetEP).
  */
-void readProgramHeader(TMV* mv, const char* filename, SegmentSizes* segSizes, UWord* offsetEP) {
-    FILE *arch;
+void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP) {
+    FILE* arch;
     UByte header[HEADER_P_RANGE];
 
-    arch = fopen(config->vmxPath, "rb");
+    arch = fopen(mv->config.vmxPath, "rb");
     if (arch == NULL)
         errorHandler(mv, ERR_FOPEN);
     else {
@@ -562,7 +576,7 @@ void readProgramHeader(TMV* mv, const char* filename, SegmentSizes* segSizes, UW
         if (header[5] == 1)
             segSizes->dataSegSize = mv->totalMemorySize - segSizes->codeSegSize;
         else if (header[5] == 2) {
-            fread(header + 8, 1, HEADER_P_V2, arch);
+            fread(header + HEADER_P_COMUN, 1, HEADER_P_V2, arch);
             segSizes->dataSegSize = ((UWord) header[8] << 8) | header[9];
             segSizes->extraSegSize = ((UWord) header[10] << 8) | header[11];
             segSizes->stackSegSize = ((UWord) header[12] << 8) | header[13];
@@ -578,11 +592,11 @@ void readProgramHeader(TMV* mv, const char* filename, SegmentSizes* segSizes, UW
  * @brief Carga el código y las constantes desde el archivo .vmx a la memoria de la MV.
  * Debe ser llamada DESPUÉS de initializeTable.
  */
-void loadProgramData(TMV* mv, const char* filename, SegmentSizes* segSizes) {
-    FILE *arch;
+void loadProgramData(TMV* mv, SegmentSizes* segSizes) {
+    FILE* arch;
     UByte version;
 
-    arch = fopen(filename, "rb");
+    arch = fopen(mv->config.vmxPath, "rb");
     if (arch == NULL)
         errorHandler(mv, ERR_FOPEN);
     else {
@@ -593,6 +607,64 @@ void loadProgramData(TMV* mv, const char* filename, SegmentSizes* segSizes) {
         fread(mv->mem + mv->seg[decodeSeg(mv, CS)].base, 1, segSizes->codeSegSize, arch);
         if (version == 2 && segSizes->constSegSize > 0)
             fread(mv->mem + mv->seg[decodeSeg(mv, KS)].base, 1, segSizes->constSegSize, arch);
+
+        fclose(arch);
+    }
+}
+
+void writeImage(TMV* mv) {
+    FILE* arch;
+    char* id = "VMI25";
+    UByte version = 1, i;
+
+    arch = fopen(mv->config.vmiPath, "wb");
+    if (arch == NULL)
+        errorHandler(mv, ERR_FOPEN);
+    else {
+        // Header
+        fwrite(id, 1, 5, arch);
+        fwrite(version, 1, 1, arch);
+        fwrite(mv->totalMemorySize, 1, 2, arch);
+
+        // Registros
+        fwrite(mv->reg, 1, 128, arch);
+
+        // Tabla de descriptores de segmentos
+        for(i = 0, i < SEG_AMOUNT, i++) {
+            fwrite(mv->seg[i].base, 1, 2, arch);
+            fwrite(mv->seg[i].size, 1, 2, arch);
+        }
+
+        // Memoria
+        fwrite(mv->mem, 1, mv->totalMemorySize, arch);
+
+        fclose(arch);
+    }
+}
+
+void readImage(TMV* mv) {
+    FILE* arch;
+
+    arch = fopen(mv->config.vmiPath, "rb");
+    if (arch == NULL)
+        errorHandler(mv, ERR_FOPEN);
+    else {
+        fseek(arch, 6, SEEK_SET);
+
+        // Total de memoria
+        fread(&mv->totalMemorySize, 1, 2, arch);
+
+        // Registros
+        fread(mv->reg, 1, 128, arch),
+
+        // Tabla de descriptores de segmentos
+        for(i = 0, i < SEG_AMOUNT, i++) {
+            fread(&mv->seg[i].base, 1, 2, arch);
+            fread(&mv->seg[i].size, 1, 2, arch);
+        }
+
+        // Memoria
+        fread(mv->mem, 1, mv->totalMemorySize, arch);
 
         fclose(arch);
     }
@@ -619,16 +691,38 @@ ULong sumSegSizes(SegmentSizes* segSizes) {
  * @brief Suma los tamaños de todos los parametros y anade el tamano del puntero que los direcciona.
  * @return El size de PS en bytes, como un ULong.
  */
-ULong calculatePSSize(VMConfig* config) {
+ULong calculatePSSize(TMV* mv) {
     ULong psSize = 0;
     int i;
 
-    for (i = 0; i < config->paramsArgc; i++) {
-        psSize += strlen(config->paramsArgv[i]) + 1;
+    for (i = 0; i < mv->config.paramsArgc; i++) {
+        psSize += strlen(mv->config.paramsArgv[i]) + 1;
     }
-    psSize += (ULong)config->paramsArgc * sizeof(Long);
+    psSize += (ULong) mv->config.paramsArgc * sizeof(Long);
 
     return psSize;
+}
+
+void createParamSegment(TMV* mv) {
+    UWord offsetStr = 0, offsetPtr = 0, cantBytes = 4, i;
+    ULong ptrStr;
+
+    if (mv->config.paramsArgc > 0) {
+        for (i = 0, i < mv->config.paramsArgc, i++) {
+            strcpy(&mv->mem[offsetStr], mv->config.paramsArgv[i]);
+            offsetStr += strlen(mv->config.paramsArgv[i]) + 1;
+        }
+
+        offsetPtr = offsetStr;
+        offsetStr = 0;
+        for (i = 0, i < mv->config.paramsArgc, i++) {
+            ptrStr = 0x00000000 | offsetStr;
+            for (j = 0; j < cantBytes; j++)
+                mv->mem[offsetStr + j] = (UByte) (ptrStr >> (8 * (cantBytes - 1 - j)) & MASK_SETMEM);
+            offsetStr += strlen(mv->config.paramsArgv[i]) + 1;
+            offsetPtr += cantBytes;
+        }
+    }
 }
 
 /**
@@ -647,7 +741,7 @@ void initializeTable(TMV* mv, SegmentSizes* segSizes) {
     // Iteramos sobre el mapa que define el orden y la metadata.
     for (; i < NUM_SEGMENTS; i++) {
         // Obtenemos el tamaño del segmento actual de forma automática.
-        currentSize = *(UWord*)((char*)segSizes + segmentLayoutMap[i].size_offset);
+        currentSize = *(UWord*)((Byte*)segSizes + segmentLayoutMap[i].size_offset);
 
         if (currentSize > 0) {
             // Si el segmento tiene tamaño, le creamos una entrada en la tabla.
@@ -670,12 +764,11 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP) {
     Long i = 0, tableIndex = 0, currentReg = 0;
     UWord currentSize = 0;
 
-    // 1. Iteramos sobre el mapa para asignar los registros de segmento.
+    // Iteramos sobre el mapa para asignar los registros de segmento.
     for (i = 0; i < NUM_SEGMENTS; i++) {
-        currentSize = *(UWord*)((Byte*)segSizes + segmentLayoutMap[i].size_offset);
         currentReg = segmentLayoutMap[i].reg;
 
-        if (currentSize > 0) {
+        if (mv->seg[i].size > 0) {
             mv->reg[currentReg] = tableIndex << 16;
             tableIndex++;
         } else {
@@ -683,7 +776,7 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP) {
         }
     }
 
-    // 2. Finalmente, inicializamos los punteros de ejecución (IP y SP).
+    // Finalmente, inicializamos los punteros de ejecución (IP y SP).
     mv->reg[IP] = mv->reg[CS] | offsetEP;
 
     if (mv->reg[SS] != -1)
@@ -1142,6 +1235,18 @@ void fsysWrite(TMV* mv) {
     }
 }
 
+void fsysBreak(TMV* mv) {
+    char car;
+
+    writeImage(mv);
+    do {
+        scanf("%c", &car);
+        if (car == 'q')
+            mv->reg[IP] = -1;
+        else if (car == CR)
+            executeOneInstruction(mv);
+    } while (car != 'g' && car != 'q');
+}
 
 // Funcion SYS - Llamadas al sistema
 void fsys(TMV* mv, Long* value1, Long* value2) {
