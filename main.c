@@ -16,9 +16,10 @@
 #define NUM_SEGMENTS     (sizeof(segmentLayoutMap) / sizeof(SegmentLayout))
 
 // Cantidades de bytes de header del .vmx
-#define HEADER_P_RANGE 18
-#define HEADER_P_COMUN 8
-#define HEADER_P_V2    10
+#define HEADER_P_RANGE      18
+#define HEADER_P_COMUN      8
+#define HEADER_P_V2         10
+#define HEADER_I            8
 
 // Constantes para el Disassambler
 #define MNEM_WIDTH 8
@@ -78,7 +79,8 @@ typedef struct {
     Long       reg[REG_AMOUNT];     // 32 registros de 4 bytes
     TableSeg   seg[SEG_AMOUNT];     // Tabla de segmentos
     MVConfig   config;              // Configuracion de la MV
-    UByte      flag;                // Error flag
+    UByte      errorFlag;           // Error flag
+    UByte      breakFlag;           // Breakpoint flag
 } TMV;
 
 // Almacena los tamaños de los segmentos leídos del header del .vmx
@@ -90,23 +92,6 @@ typedef struct {
     UWord constSegSize;
     UWord paramSegSize;
 } SegmentSizes;
-
-// Estructura que describe la metadata de un segmento
-typedef struct {
-    Long    reg;          // El enum del registro de segmento (ej: PS, KS, CS)
-    ULong   size_offset;  // El offset del campo de tamaño dentro de la struct SegmentSizes
-} SegmentLayout;
-
-// El "mapa" que es la ÚNICA FUENTE DE LA VERDAD para el layout de la memoria.
-// Define el orden físico y cómo encontrar el tamaño y el registro de cada segmento.
-static const SegmentLayout segmentLayoutMap[] = {
-    { PS, offsetof(SegmentSizes, paramSegSize)  },
-    { KS, offsetof(SegmentSizes, constSegSize)  },
-    { CS, offsetof(SegmentSizes, codeSegSize)   },
-    { DS, offsetof(SegmentSizes, dataSegSize)   },
-    { ES, offsetof(SegmentSizes, extraSegSize)  },
-    { SS, offsetof(SegmentSizes, stackSegSize)  }
-};
 
 // Enumeracion de errores
 typedef enum {
@@ -176,6 +161,23 @@ static const char* regStr[32] = {
     "PS"        // 31
 };
 
+// Estructura que describe la metadata de un segmento
+typedef struct {
+    Long    reg;          // El enum del registro de segmento (ej: PS, KS, CS)
+    ULong   size_offset;  // El offset del campo de tamaño dentro de la struct SegmentSizes
+} SegmentLayout;
+
+// El "mapa" que es la ÚNICA FUENTE DE LA VERDAD para el layout de la memoria.
+// Define el orden físico y cómo encontrar el tamaño y el registro de cada segmento.
+static const SegmentLayout segmentLayoutMap[] = {
+    { PS, offsetof(SegmentSizes, paramSegSize)  },
+    { KS, offsetof(SegmentSizes, constSegSize)  },
+    { CS, offsetof(SegmentSizes, codeSegSize)   },
+    { DS, offsetof(SegmentSizes, dataSegSize)   },
+    { ES, offsetof(SegmentSizes, extraSegSize)  },
+    { SS, offsetof(SegmentSizes, stackSegSize)  }
+};
+
 // Enumeracion de instrucciones
 typedef enum {
     SYS = 0x00, JMP, JZ, JP, JN, JNZ, JNP, JNN, NOT,
@@ -221,14 +223,17 @@ static const char* opStr[32] = {
 };
 
 // --- Prototipos ---
-void executeProgram(TMV* mv);
 void errorHandler(TMV* mv, int err);
 void parseCommandLine(int argc, char* argv[], TMV* mv);
-void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP)
+void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP);
 void loadProgramData(TMV* mv, SegmentSizes* segSizes);
+void readImage(TMV* mv);
+void writeUWordBE(FILE* arch, UWord data);
+void writeLongBE(FILE* arch, Long data);
+void writeImage(TMV* mv);
 ULong sumSegSizes(SegmentSizes* segSizes);
 ULong calculatePSSize(TMV* mv);
-void createParamSegment(TMV* mv);
+void createParamSegment(TMV* mv, UWord psSize);
 void initializeTable(TMV* mv, SegmentSizes* segSizes);
 void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP);
 
@@ -237,11 +242,15 @@ void disASMOP(TMV* mv, Long operand, Byte type);
 void disASMOPStr(TMV* mv, Long operand, Byte type, int* len);
 void disASM(TMV* mv);
 
+// Ejecucion del programa
+void executeProgram(TMV* mv);
+void executeOneInstruction(TMV* mv);
+
 // Prototipos de ubicacion fisica
+Long decodeSeg(TMV* mv, Long cod);
 Long decodeAddr(TMV* mv, Long logical);
 int inSegment(TMV* mv, Long logical);
 int inCS(TMV* mv, Long logical);
-int inDS(TMV* mv, Long logical);
 
 // Prototipos de fetch
 void fetchInstruction(TMV* mv);
@@ -268,7 +277,7 @@ void fsysWrite(TMV* mv);
 void fsysStrread(TMV* mv);
 void fsysStrwrite(TMV* mv);
 void fsysClrscr(TMV* mv);
-void fsysBreak(TMV* mv);
+void fsysBreakpoint(TMV* mv);
 
 // Prototipos de las instrucciones
 void fmsl(TMV* mv, Long* value1, Long* value2);
@@ -353,7 +362,7 @@ static const SysFunc sysTable[16] = {
     //[0x03] = fsysStrread,
     //[0x04] = fsysStrwrite,
     //[0x07] = fsysClrscr,
-    [0x0F] = fsysBreak,
+    [0x0F] = fsysBreakpoint,
 };
 
 // Puntero a funciones de condicion
@@ -382,7 +391,7 @@ static const CondFunc condVector[8] = {
 
 /// --- CODIGO ---
 /**
- * @brief
+ * @brief Punto de entrada. Orquesta la configuración, carga y ejecución de la máquina virtual.
  */
 int main(int argc, char *argv[]) {
     TMV mv;
@@ -390,13 +399,14 @@ int main(int argc, char *argv[]) {
     UWord offsetEP;
     ULong psSize;
 
-    mv.flag = 0;
+    mv.errorFlag = 0;
+    mv.breakFlag = 0;
     srand(time(NULL));      // Para la instruccion RND
 
     // Parsear los argumentos y llenar la estructura config
     parseCommandLine(argc, argv, &mv);
 
-    if (mv.flag == 0) {
+    if (mv.errorFlag == 0) {
         // --- RESERVA DE MEMORIA DINÁMICA ---
         mv.totalMemorySize = mv.config.memoryKiB * 1024;
         mv.mem = (UByte*) malloc(mv.totalMemorySize);
@@ -411,7 +421,7 @@ int main(int argc, char *argv[]) {
                 errorHandler(&mv, ERR_MEM);
             else {
                 segSizes.paramSegSize = psSize;
-                createParamSegment(&mv);
+                createParamSegment(&mv, segSizes.paramSegSize);
 
                 // Si hay un .vmx, se carga el programa
                 if (mv.config.vmxPath != NULL) {
@@ -428,7 +438,7 @@ int main(int argc, char *argv[]) {
 
                     // Suma de los sizes para ver si sobrepasan el total de memoria
                     if (sumSegSizes(&segSizes) > mv.totalMemorySize)
-                        errorHandler(mv, ERR_MEM);
+                        errorHandler(&mv, ERR_MEM);
                     else {
                         // Inicializaciones de tabla de segmentos y registros
                         initializeTable(&mv, &segSizes);
@@ -446,10 +456,11 @@ int main(int argc, char *argv[]) {
             }
 
             // --- Lógica de Ejecución ---
-            if (mv.flag == 0) {
+            if (mv.errorFlag == 0) {
                 // Disassambler
                 if (mv.config.disassemblerFlag) {
                     disASM(&mv);
+                    initializeRegisters(&mv, &segSizes, offsetEP);
                 }
 
                 // Ejecucion del programa
@@ -463,59 +474,19 @@ int main(int argc, char *argv[]) {
         free(mv.mem);
     }
 
-    return mv.flag;
+    return mv.errorFlag;
 }
 
-// Flujo principal de ejecucion
-void executeProgram(TMV* mv) {
-    //fpush
-    //fpush(mv, mv->config.paramArgc, 0);
-    //fpush(mv, -1, 0);
-    while (mv->flag == 0 && inCS(mv, mv->reg[IP])) {
-        executeOneInstruction(mv);
-    }
-}
-
-void executeOneInstruction(TMV* mv) {
-    Instruction instr;
-    Long value1, value2;
-
-    fetchInstruction(mv);
-    fetchOperators(mv);
-    addIP(mv);
-    instr = instrTable[mv->reg[OPC]];
-
-    if (mv->flag == 0) {
-        if (instr.fetchValue > 0) {
-            value1 = getOP(mv, mv->reg[OP1]);
-            if (instr.fetchValue == 2)
-                value2 = getOP(mv, mv->reg[OP2]);
-        }
-
-        instr.execute(mv, &value1, &value2);
-    }
-
-    if (mv->flag == 0) {
-        if (instr.setearCC == 1)
-            setCC(mv, value1);
-        if (instr.setValue > 0) {
-            setOP(mv, mv->reg[OP1], value1);
-            if (instr.setValue == 2)
-                setOP(mv, mv->reg[OP2], value2);
-        }
-    }
-}
-
- /**
- * @brief Recibe un int corresponsinte al error y lo comunica el mensaje adecuado de acuerdo a un vector de errores
+/**
+ * @brief Maneja los errores, establece el flag de error e imprime el mensaje correspondiente.
  */
 void errorHandler(TMV* mv, int err) {
-    mv->flag = err;
+    mv->errorFlag = err;
     fprintf(stderr, "%s", errorMsgs[err]);
 }
 
- /**
- * @brief Parsea la informacion recibida por parametros en config
+/**
+ * @brief Parsea los argumentos de la línea de comandos y configura la estructura MVConfig.
  */
 void parseCommandLine(int argc, char* argv[], TMV* mv) {
     int i;
@@ -559,8 +530,8 @@ void parseCommandLine(int argc, char* argv[], TMV* mv) {
     }
 }
 
- /**
- * @brief Lee solo el HEADER de un archivo .vmx para obtener los tamaños de los segmentos (y el offsetEP).
+/**
+ * @brief Lee únicamente el encabezado (header) de un archivo .vmx para obtener los tamaños de los segmentos y el punto de entrada.
  */
 void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP) {
     FILE* arch;
@@ -589,8 +560,7 @@ void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP) {
 }
 
 /**
- * @brief Carga el código y las constantes desde el archivo .vmx a la memoria de la MV.
- * Debe ser llamada DESPUÉS de initializeTable.
+ * @brief Carga el código y las constantes desde el archivo .vmx a sus posiciones finales en la memoria de la MV.
  */
 void loadProgramData(TMV* mv, SegmentSizes* segSizes) {
     FILE* arch;
@@ -612,67 +582,95 @@ void loadProgramData(TMV* mv, SegmentSizes* segSizes) {
     }
 }
 
+/**
+ * @brief Carga el estado completo de la MV (memoria, registros, tabla) desde un archivo de imagen .vmi.
+ */
+void readImage(TMV* mv) {
+    FILE* arch;
+    UByte header[HEADER_I];
+    UWord memKiB;
+
+    arch = fopen(mv->config.vmiPath, "rb");
+    if (arch == NULL)
+        errorHandler(mv, ERR_FOPEN);
+    else {
+         // Header
+        fread(header, sizeof(UByte), HEADER_I, arch);
+
+        // Extraer tamaño de memoria y RESERVARLA
+        memKiB = ((UWord)header[6] << 8) | header[7];
+        mv->totalMemorySize = memKiB * 1024;
+        mv->mem = (UByte*) malloc(mv->totalMemorySize);
+
+        if (mv->mem == NULL)
+            errorHandler(mv, ERR_MEM);
+        else {
+            // Registros
+            fread(mv->reg, sizeof(Long), REG_AMOUNT, arch);
+
+            // Tabla de Segmentos
+            fread(mv->seg, sizeof(TableSeg), SEG_AMOUNT, arch);
+
+            // Memoria
+            fread(mv->mem, sizeof(UByte), mv->totalMemorySize, arch);
+        }
+
+        fclose(arch);
+    }
+}
+
+// Funcion auxiliar para escribir un UWord (2 bytes) en un archivo en formato Big Endian
+void writeUWordBE(FILE* arch, UWord data) {
+    fputc((data >> 8) & MASK_SETMEM, arch);
+    fputc(data & MASK_SETMEM, arch);
+}
+
+// Funcion auxiliar para escribir un Long (4 bytes) en un archivo en formato Big Endian
+void writeLongBE(FILE* arch, Long data) {
+    fputc((data >> 24) & MASK_SETMEM, arch);
+    fputc((data >> 16) & MASK_SETMEM, arch);
+    fputc((data >> 8) & MASK_SETMEM, arch);
+    fputc(data & MASK_SETMEM, arch);
+}
+
+/**
+ * @brief Guarda el estado actual de la MV (memoria, registros, tabla) en un archivo de imagen .vmi en formato Big Endian.
+ */
 void writeImage(TMV* mv) {
     FILE* arch;
-    char* id = "VMI25";
     UByte version = 1, i;
+    UWord memKiB = mv->totalMemorySize / 1024;
 
     arch = fopen(mv->config.vmiPath, "wb");
     if (arch == NULL)
         errorHandler(mv, ERR_FOPEN);
     else {
         // Header
-        fwrite(id, 1, 5, arch);
-        fwrite(version, 1, 1, arch);
-        fwrite(mv->totalMemorySize, 1, 2, arch);
+        fwrite("VMI25", sizeof(char), 5, arch);
+        fputc(version, arch);
+        writeUWordBE(arch, memKiB);
 
         // Registros
-        fwrite(mv->reg, 1, 128, arch);
-
-        // Tabla de descriptores de segmentos
-        for(i = 0, i < SEG_AMOUNT, i++) {
-            fwrite(mv->seg[i].base, 1, 2, arch);
-            fwrite(mv->seg[i].size, 1, 2, arch);
+        for (i = 0; i < REG_AMOUNT; i++) {
+            writeLongBE(arch, mv->reg[i]);
         }
 
-        // Memoria
-        fwrite(mv->mem, 1, mv->totalMemorySize, arch);
-
-        fclose(arch);
-    }
-}
-
-void readImage(TMV* mv) {
-    FILE* arch;
-
-    arch = fopen(mv->config.vmiPath, "rb");
-    if (arch == NULL)
-        errorHandler(mv, ERR_FOPEN);
-    else {
-        fseek(arch, 6, SEEK_SET);
-
-        // Total de memoria
-        fread(&mv->totalMemorySize, 1, 2, arch);
-
-        // Registros
-        fread(mv->reg, 1, 128, arch),
-
-        // Tabla de descriptores de segmentos
-        for(i = 0, i < SEG_AMOUNT, i++) {
-            fread(&mv->seg[i].base, 1, 2, arch);
-            fread(&mv->seg[i].size, 1, 2, arch);
+        // Tabla de Descriptores
+        for (i = 0; i < SEG_AMOUNT; i++) {
+            writeUWordBE(arch, mv->seg[i].base);
+            writeUWordBE(arch, mv->seg[i].size);
         }
 
-        // Memoria
-        fread(mv->mem, 1, mv->totalMemorySize, arch);
+        // Memoria Principal
+        // Esto es un array de bytes, así que un fwrite directo está bien
+        fwrite(mv->mem, sizeof(UByte), mv->totalMemorySize, arch);
 
         fclose(arch);
     }
 }
 
 /**
- * @brief Suma los tamaños de todos los segmentos.
- * @return La suma total de los tamaños en bytes, como un ULong.
+ * @brief Calcula la suma total en bytes de todos los segmentos definidos.
  */
 ULong sumSegSizes(SegmentSizes* segSizes) {
     ULong total = 0;
@@ -688,8 +686,7 @@ ULong sumSegSizes(SegmentSizes* segSizes) {
 }
 
 /**
- * @brief Suma los tamaños de todos los parametros y anade el tamano del puntero que los direcciona.
- * @return El size de PS en bytes, como un ULong.
+ * @brief Calcula el tamaño requerido en bytes para el Param Segment basándose en los argumentos de entrada.
  */
 ULong calculatePSSize(TMV* mv) {
     ULong psSize = 0;
@@ -703,43 +700,53 @@ ULong calculatePSSize(TMV* mv) {
     return psSize;
 }
 
-void createParamSegment(TMV* mv) {
-    UWord offsetStr = 0, offsetPtr = 0, cantBytes = 4, i;
-    ULong ptrStr;
+/**
+ * @brief Escribe los strings y el arreglo de punteros argv en el espacio de memoria del Param Segment.
+ */
+void createParamSegment(TMV* mv, UWord psSize) {
+    Long argvArraySize, argvPhysicalStart, currentStringOffset, psLogicalPtr, stringLogicalPtr, destAddr, cantBytes, i, j;
+
+    argvArraySize = mv->config.paramsArgc * sizeof(Long);
+    argvPhysicalStart = psSize - argvArraySize;
+    currentStringOffset = 0;
+    psLogicalPtr = 0;   // Si existe, siempre se ubica en 0
+    cantBytes = 4;
 
     if (mv->config.paramsArgc > 0) {
-        for (i = 0, i < mv->config.paramsArgc, i++) {
-            strcpy(&mv->mem[offsetStr], mv->config.paramsArgv[i]);
-            offsetStr += strlen(mv->config.paramsArgv[i]) + 1;
-        }
+        for (i = 0; i < mv->config.paramsArgc; i++) {
+            // Escribir el string
+            strcpy((char*)&mv->mem[currentStringOffset], mv->config.paramsArgv[i]);
 
-        offsetPtr = offsetStr;
-        offsetStr = 0;
-        for (i = 0, i < mv->config.paramsArgc, i++) {
-            ptrStr = 0x00000000 | offsetStr;
+            // Crear y escribir el puntero lógico
+            stringLogicalPtr = psLogicalPtr | currentStringOffset;
+            destAddr = argvPhysicalStart + i * sizeof(Long);
             for (j = 0; j < cantBytes; j++)
-                mv->mem[offsetStr + j] = (UByte) (ptrStr >> (8 * (cantBytes - 1 - j)) & MASK_SETMEM);
-            offsetStr += strlen(mv->config.paramsArgv[i]) + 1;
-            offsetPtr += cantBytes;
+                mv->mem[destAddr + j] = (UByte) (stringLogicalPtr >> (8 * (cantBytes - 1 - j)) & MASK_SETMEM);
+
+            // Actualizar el offset
+            currentStringOffset += strlen(mv->config.paramsArgv[i]) + 1;
         }
     }
 }
 
 /**
- * @brief Construye la tabla de descriptores de segmentos en memoria.
- *
- * Su única responsabilidad es crear el "mapa" físico de la memoria
- * llenando la estructura mv->seg. No modifica ningún registro.
- * Utiliza el mapa de configuración para determinar el orden y tamaño.
- *
- * Inicializacion de la tabla de descriptores de segmentos.
+ * @brief Inicializa la tabla de descriptores de segmentos, estableciendo los valores por defecto y luego colocando los segmentos válidos.
  */
 void initializeTable(TMV* mv, SegmentSizes* segSizes) {
     Long physicalOffset = 0, tableIndex = 0, i = 0;
     UWord currentSize;
 
+    // Inicializamos toda la tabla con los valores por defecto.
+    // Iteramos sobre SEG_AMOUNT (8) para cubrir todos los "slots" físicos de la tabla.
+
+    for (i = 0; i < SEG_AMOUNT; i++) {
+        mv->seg[i].base = -1;   // En un UWord, -1 se convierte en 0xFFFF
+        mv->seg[i].size = 0;
+    }
+
+
     // Iteramos sobre el mapa que define el orden y la metadata.
-    for (; i < NUM_SEGMENTS; i++) {
+    for (i = 0; i < NUM_SEGMENTS; i++) {
         // Obtenemos el tamaño del segmento actual de forma automática.
         currentSize = *(UWord*)((Byte*)segSizes + segmentLayoutMap[i].size_offset);
 
@@ -755,10 +762,7 @@ void initializeTable(TMV* mv, SegmentSizes* segSizes) {
 }
 
 /**
- * @brief Inicializa todos los registros de la MV.
- *
- * Configura los punteros de segmento (CS, DS, etc.) basándose en la
- * existencia de cada segmento y luego inicializa los punteros de ejecución (IP, SP).
+ * @brief Inicializa todos los registros de la MV, incluyendo los punteros de segmento (CS, DS, etc.) y los punteros de ejecución (IP, SP).
  */
 void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP) {
     Long i = 0, tableIndex = 0, currentReg = 0;
@@ -766,9 +770,10 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP) {
 
     // Iteramos sobre el mapa para asignar los registros de segmento.
     for (i = 0; i < NUM_SEGMENTS; i++) {
+        currentSize = *(UWord*)((Byte*)segSizes + segmentLayoutMap[i].size_offset);
         currentReg = segmentLayoutMap[i].reg;
 
-        if (mv->seg[i].size > 0) {
+        if (currentSize > 0) {
             mv->reg[currentReg] = tableIndex << 16;
             tableIndex++;
         } else {
@@ -875,10 +880,56 @@ void disASM(TMV* mv) {
 
         mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
     }
-
-    initializationReg(mv);
 }
 
+/**
+ * @brief Bucle principal de ejecución. Ejecuta instrucciones una por una mientras el IP esté en el Code Segment.
+ */
+void executeProgram(TMV* mv) {
+    //fpush
+    //fpush(mv, mv->config.paramArgc, 0);
+    //fpush(mv, -1, 0);
+    while (mv->errorFlag == 0 && inCS(mv, mv->reg[IP])) {
+        executeOneInstruction(mv);
+    }
+}
+
+/**
+ * @brief Realiza un ciclo completo de instrucción (fetch, decode, execute).
+ */
+void executeOneInstruction(TMV* mv) {
+    Instruction instr;
+    Long value1, value2;
+
+    fetchInstruction(mv);
+    fetchOperators(mv);
+    addIP(mv);
+    instr = instrTable[mv->reg[OPC]];
+
+    if (mv->errorFlag == 0) {
+        if (instr.fetchValue > 0) {
+            value1 = getOP(mv, mv->reg[OP1]);
+            if (instr.fetchValue == 2)
+                value2 = getOP(mv, mv->reg[OP2]);
+        }
+
+        instr.execute(mv, &value1, &value2);
+    }
+
+    if (mv->errorFlag == 0) {
+        if (instr.setearCC == 1)
+            setCC(mv, value1);
+        if (instr.setValue > 0) {
+            setOP(mv, mv->reg[OP1], value1);
+            if (instr.setValue == 2)
+                setOP(mv, mv->reg[OP2], value2);
+        }
+    }
+}
+
+/**
+ * @brief Obtiene el índice de la tabla de segmentos a partir de un puntero lógico de segmento.
+ */
 Long decodeSeg(TMV* mv, Long cod) {
     return mv->reg[cod] >> 16;
 }
@@ -906,14 +957,11 @@ int inSegment(TMV* mv, Long logical) {
     return offset < mv->seg[segIndex].size;
 }
 
-// Verifica si una dirección lógica está en CS
+/**
+ * @brief Verifica si una dirección lógica pertenece al Code Segment.
+ */
 int inCS(TMV* mv, Long logical) {
-    return ((logical >> 16) == CS_SEG) && inSegment(mv, logical);
-}
-
-// Verifica si una dirección lógica está en DS
-int inDS(TMV* mv, Long logical) {
-    return ((logical >> 16) == DS_SEG) && inSegment(mv, logical);
+    return ((logical >> 16) == (decodeSeg(mv, CS))) && inSegment(mv, logical);
 }
 
 void addIP(TMV* mv) {
@@ -942,7 +990,7 @@ void fetchInstruction(TMV* mv) {
 Long fetchOperand(TMV* mv, int bytes, int* offset) {
     Long logical, physical, temp = 0, i = bytes;
 
-    while (i > 0 && mv->flag == 0) {
+    while (i > 0 && mv->errorFlag == 0) {
         logical = mv->reg[IP] + (*offset);
         if (!inCS(mv, logical))
             errorHandler(mv, ERR_SEG);
@@ -967,7 +1015,7 @@ void fetchOperators(TMV* mv) {
     op2Bytes = mv->reg[OP2] >> 24;
     op1Bytes = mv->reg[OP1] >> 24;
     mv->reg[OP2] |= fetchOperand(mv, op2Bytes, &offset);
-    if (mv->flag == 0)
+    if (mv->errorFlag == 0)
         mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
 }
 
@@ -993,9 +1041,9 @@ void setLAR(TMV* mv, Long operand) {
 void setMAR(TMV* mv, Long cantBytes, Long logical) {
     Long physical;
 
-    if (mv->flag == 0) {
+    if (mv->errorFlag == 0) {
         physical = decodeAddr(mv, logical);
-        if (physical + cantBytes - 1 >= RAM_SIZE)
+        if (physical + cantBytes - 1 >= mv->totalMemorySize)
             errorHandler(mv, ERR_SEG);
         else
             mv->reg[MAR] = (cantBytes << 16) | physical;
@@ -1007,7 +1055,7 @@ void getMemory(TMV* mv) {
     Long cantBytes, physical, temp;
     int i;
 
-    if (mv->flag == 0) {
+    if (mv->errorFlag == 0) {
         cantBytes = mv->reg[MAR] >> 16;
         physical = mv->reg[MAR] & MASK_PHY;
         temp = 0;
@@ -1025,7 +1073,7 @@ void setMemory(TMV* mv) {
     Long cantBytes, physical;
     int i;
 
-    if (mv->flag == 0) {
+    if (mv->errorFlag == 0) {
         cantBytes = mv->reg[MAR] >> 16;
         physical = mv->reg[MAR] & MASK_PHY;
 
@@ -1101,11 +1149,11 @@ void fsysRead(TMV* mv) {
     cantCeldas = mv->reg[ECX] & MASK_LDL;
     cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
 
-    while (mv->flag == 0 && i < cantCeldas) {
+    while (mv->errorFlag == 0 && i < cantCeldas) {
         setLAR(mv, mv->reg[EDX] + cantBytes * i);
         setMAR(mv, cantBytes, mv->reg[LAR]);
 
-        if (mv->flag == 0) {
+        if (mv->errorFlag == 0) {
             printf("[%04X]: ", decodeAddr(mv, mv->reg[LAR]));
 
             switch (mv->reg[EAX]) {
@@ -1197,13 +1245,13 @@ void fsysWrite(TMV* mv) {
     cantCeldas = mv->reg[ECX] & MASK_LDL;
     cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
 
-    while (mv->flag == 0 && i < cantCeldas) {
+    while (mv->errorFlag == 0 && i < cantCeldas) {
         setLAR(mv, mv->reg[EDX] + cantBytes * i);
         setMAR(mv, cantBytes, mv->reg[LAR]);
         getMemory(mv);
         write = mv->reg[MBR];
 
-        if (mv->flag == 0) {
+        if (mv->errorFlag == 0) {
             printf("[%04X]:", decodeAddr(mv, mv->reg[LAR]));
 
             if (mv->reg[EAX] & 0x10) {
@@ -1235,17 +1283,35 @@ void fsysWrite(TMV* mv) {
     }
 }
 
-void fsysBreak(TMV* mv) {
-    char car;
+/**
+ * @brief Maneja la lógica del BREAKPOINT (SYS 0x0F), guardando la imagen de la MV y esperando comandos del usuario.
+ */
+void fsysBreakpoint(TMV* mv) {
+    char car = 0;
 
-    writeImage(mv);
-    do {
-        scanf("%c", &car);
-        if (car == 'q')
+    // Condición de entrada: hay un path .vmi y NO estamos ya en un breakpoint
+    if (mv->config.vmiPath != NULL && mv->breakFlag == 0) {
+        mv->breakFlag = 1; // Activamos la bandera para prevenir anidacion
+        writeImage(mv);
+
+        do {
+            scanf("%c", &car);
+
+            if (car == 10 || car == 13) { // Enter
+                executeOneInstruction(mv);
+                if (mv->errorFlag == 0)
+                    writeImage(mv);     // Si la instrucción no causó un error, guardamos la nueva imagen
+            }
+        // Condición de salida: 'g', 'q', error de la VM, o fin del programa
+        } while (car != 'g' && car != 'q' && mv->errorFlag == 0 && inCS(mv, mv->reg[IP]));
+
+        // Si salimos del bucle por presionar 'q', marcamos el fin del programa
+        if (car == 'q') {
             mv->reg[IP] = -1;
-        else if (car == CR)
-            executeOneInstruction(mv);
-    } while (car != 'g' && car != 'q');
+        }
+
+        mv->breakFlag = 0; // Desactivamos la bandera al salir del breakpoint
+    }
 }
 
 // Funcion SYS - Llamadas al sistema
