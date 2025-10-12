@@ -9,10 +9,10 @@
 #define RAM_KIB         16                   // Maximo de RAM en KiB
 #define RAM_MAX         (RAM_KIB * 1024)     // Maximo de RAM en Bytes
 #define REG_AMOUNT      32                   // 32 Registros
-#define SEG_AMOUNT      8                    // 6 Descriptores de segmentos
+#define SEG_AMOUNT      8                    // 8 Descriptores de segmentos (son 8 en el debugger)
 #define SEG_MAXSIZE     65535                // 2^16 tamano maximo de segmento
 
-// Cantidad de segmentos en base al mapa del layout de la memoria
+// Cantidad de segmentos en base al mapa del layout de la memoria (6)
 #define NUM_SEGMENTS     (sizeof(segmentLayoutMap) / sizeof(SegmentLayout))
 
 // Cantidades de bytes de header del .vmx
@@ -649,7 +649,7 @@ void writeImage(TMV* mv) {
         fwrite("VMI25", sizeof(char), 5, arch);
         fputc(version, arch);
         writeUWordBE(arch, memKiB);
-
+        
         // Registros
         for (i = 0; i < REG_AMOUNT; i++) {
             writeLongBE(arch, mv->reg[i]);
