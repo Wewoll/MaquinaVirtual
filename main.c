@@ -1,9 +1,12 @@
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdlib.h>                 // Necesario para el uso de memoria
 #include <stdint.h>                 // Necesario para definicion de tamanos
 #include <string.h>                 // Necesario para manejo de strings
 #include <stddef.h>                 // Necesario para el uso del macro offsetof, el mapeo de los segmentos
 #include <time.h>                   // Necesario para funcion random
+
+// "NULL"
+#define NIL -1
 
 // Tamanos de la MV
 #define RAM_KIB         16                   // Maximo de RAM en KiB
@@ -45,9 +48,6 @@
 #define MASK_LDH    0xFFFF0000
 #define MASK_SETMEM 0xFF
 
-// Valor que se asigna a IP cuando la instruccion es STOP
-#define STOP_VALUE  0xFFFFFFFF
-
 // Tamanos usados dentro del codigo
 typedef int8_t Byte;
 typedef uint8_t UByte;
@@ -78,6 +78,7 @@ typedef struct {
     ULong      totalMemorySize;     // Tamaño total de la memoria en bytes
     Long       reg[REG_AMOUNT];     // 32 registros de 4 bytes
     TableSeg   seg[SEG_AMOUNT];     // Tabla de segmentos
+    UWord      offsetEP;            // Offset del Entry Point
     MVConfig   config;              // Configuracion de la MV
     UByte      errorFlag;           // Error flag
     UByte      breakFlag;           // Breakpoint flag
@@ -100,7 +101,9 @@ typedef enum {
     ERR_SEG,
     ERR_INS,
     ERR_DIV0,
-    ERR_MEM
+    ERR_MEM,
+    ERR_SOF,
+    ERR_SUF
 } ErrNumber;
 
 // Vector de mensajes de errores
@@ -112,6 +115,8 @@ static const char* errorMsgs[] = {
     "Error: Intruccion invalida.\n",                                                        // 4 - pedido en el pdf v1
     "Error: No se puede dividir por 0.\n"                                                   // 5 - pedido en el pdf v1
     "Error: Memoria insuficiente.\n"                                                        // 6 - pedido en el pdf v2
+    "Error: Stack Overflow.\n",                                                             // 7 - pedido en el pdf v2
+    "Error: Stack Underflow.\n"                                                             // 8 - pedido en el pdf v2
 };
 
 // Enumeracion de registros
@@ -222,44 +227,51 @@ static const char* opStr[32] = {
     "RND"       // 0x1F
 };
 
-// --- Prototipos ---
+/// --- PROTOTIPOS ---
+// Prototipos de inicio
 void errorHandler(TMV* mv, int err);
 void parseCommandLine(int argc, char* argv[], TMV* mv);
-void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP);
+void mallocMemory(TMV* mv);
+void readProgramHeader(TMV* mv, SegmentSizes* segSizes);
 void loadProgramData(TMV* mv, SegmentSizes* segSizes);
 void readImage(TMV* mv);
+UWord readUWordBE(FILE* arch);
+Long readLongBE(FILE* arch);
+void writeImage(TMV* mv);
 void writeUWordBE(FILE* arch, UWord data);
 void writeLongBE(FILE* arch, Long data);
-void writeImage(TMV* mv);
+UWord calculatePSSize(TMV* mv);
 ULong sumSegSizes(SegmentSizes* segSizes);
-ULong calculatePSSize(TMV* mv);
 void createParamSegment(TMV* mv, UWord psSize);
 void initializeTable(TMV* mv, SegmentSizes* segSizes);
-void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP);
+void initializeRegisters(TMV* mv, SegmentSizes* segSizes);
 
 // Prototipos del disassambler
-void disASMOP(TMV* mv, Long operand, Byte type);
-void disASMOPStr(TMV* mv, Long operand, Byte type, int* len);
 void disASM(TMV* mv);
+void disASMPrintStrings(TMV* mv);
+void disASMPrintCode(TMV* mv);
+void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t buflen);
 
 // Ejecucion del programa
 void executeProgram(TMV* mv);
 void executeOneInstruction(TMV* mv);
+void initializeMainStack(TMV* mv);
 
-// Prototipos de ubicacion fisica
+// Prototipos de decodificadores
 Long decodeSeg(TMV* mv, Long cod);
 Long decodeAddr(TMV* mv, Long logical);
 int inSegment(TMV* mv, Long logical);
 int inCS(TMV* mv, Long logical);
 
-// Prototipos de fetch
+// Prototipos de inicio de instruccion
 void fetchInstruction(TMV* mv);
-Long fetchOperand(TMV* mv, int bytes, int* offset);
 void fetchOperators(TMV* mv);
+Long fetchOperand(TMV* mv, int bytes, int* offset);
 void addIP(TMV* mv);
 
 // Prototipos de memoria
-void setLAR(TMV* mv, Long operand);
+void setLARFromOperand(TMV* mv, Long operand);
+void setLARFromAddress(TMV* mv, Long logicalAddress);
 void setMAR(TMV* mv, Long cantBytes, Long logical);
 void getMemory(TMV* mv);
 void setMemory(TMV* mv);
@@ -274,16 +286,22 @@ void fsys(TMV* mv, Long* value1, Long* value2);
 void fsysRead(TMV* mv);
 void decToBinC2(Long value, char *binStr);
 void fsysWrite(TMV* mv);
-void fsysStrread(TMV* mv);
-void fsysStrwrite(TMV* mv);
-void fsysClrscr(TMV* mv);
+void fsysStrRead(TMV* mv);
+void fsysStrWrite(TMV* mv);
+void fsysClrScr(TMV* mv);
 void fsysBreakpoint(TMV* mv);
 
-// Prototipos de las instrucciones
+// Prototipos de saltos
 void fmsl(TMV* mv, Long* value1, Long* value2);
 Long fjz(TMV* mv);
 Long fjn(TMV* mv);
+
+// Prototipos del resto de las operaciones
 void fnot(TMV* mv, Long* value1, Long* value2);
+void fpush(TMV* mv, Long* value1, Long* value2);
+void fpop(TMV* mv, Long* value1, Long* value2);
+void fcall(TMV* mv, Long* value1, Long* value2);
+void fret(TMV* mv, Long* value1, Long* value2);
 void fstop(TMV* mv, Long* value1, Long* value2);
 void fmov(TMV* mv, Long* value1, Long* value2);
 void fadd(TMV* mv, Long* value1, Long* value2);
@@ -328,11 +346,11 @@ static const Instruction instrTable[32] = {
     [9]   =  { .fetchValue = 0, .execute = finvalid, .setearCC = 0, .setValue = 0 }, // 0x09
     [10]  =  { .fetchValue = 0, .execute = finvalid, .setearCC = 0, .setValue = 0 }, // 0x0A
 
-    //[PUSH] = { .fetchValue = 1, .execute = fpush, .setearCC = 0, .setValue = 0 },    // 0x0B
-    //[POP] =  { .fetchValue = 1, .execute = fpop, .setearCC = 0, .setValue = 0 },     // 0x0C
-    //[CALL] = { .fetchValue = 1, .execute = fcall, .setearCC = 0, .setValue = 0 },    // 0x0D
+    [PUSH] = { .fetchValue = 1, .execute = fpush, .setearCC = 0, .setValue = 0 },    // 0x0B
+    [POP] =  { .fetchValue = 1, .execute = fpop, .setearCC = 0, .setValue = 1 },     // 0x0C
+    [CALL] = { .fetchValue = 1, .execute = fcall, .setearCC = 0, .setValue = 0 },    // 0x0D
 
-    //[RET] =  { .fetchValue = 0, .execute = fret, .setearCC = 0, .setValue = 0 },     // 0x0E
+    [RET] =  { .fetchValue = 0, .execute = fret, .setearCC = 0, .setValue = 0 },     // 0x0E
     [STOP] = { .fetchValue = 0, .execute = fstop, .setearCC = 0, .setValue = 0 },    // 0x0F
 
     [MOV] =  { .fetchValue = 2, .execute = fmov, .setearCC = 0, .setValue = 1 },     // 0x10
@@ -359,9 +377,9 @@ typedef void (*SysFunc)(TMV*);
 static const SysFunc sysTable[16] = {
     [0x01] = fsysRead,
     [0x02] = fsysWrite,
-    //[0x03] = fsysStrread,
-    //[0x04] = fsysStrwrite,
-    //[0x07] = fsysClrscr,
+    [0x03] = fsysStrRead,
+    [0x04] = fsysStrWrite,
+    [0x07] = fsysClrScr,
     [0x0F] = fsysBreakpoint,
 };
 
@@ -396,8 +414,6 @@ static const CondFunc condVector[8] = {
 int main(int argc, char *argv[]) {
     TMV mv;
     SegmentSizes segSizes;
-    UWord offsetEP;
-    ULong psSize;
 
     mv.errorFlag = 0;
     mv.breakFlag = 0;
@@ -408,51 +424,44 @@ int main(int argc, char *argv[]) {
 
     if (mv.errorFlag == 0) {
         // --- RESERVA DE MEMORIA DINÁMICA ---
-        mv.totalMemorySize = mv.config.memoryKiB * 1024;
-        mv.mem = (UByte*) malloc(mv.totalMemorySize);
+        mallocMemory(&mv);
 
         if (mv.mem == NULL)
             errorHandler(&mv, ERR_MEM);
         else {
             // --- Lógica de Carga ---
             // Calcular el size de PS
-            psSize = calculatePSSize(&mv);
-            if (psSize > SEG_MAXSIZE)
-                errorHandler(&mv, ERR_MEM);
-            else {
-                segSizes.paramSegSize = psSize;
-                createParamSegment(&mv, segSizes.paramSegSize);
+            segSizes.paramSegSize = calculatePSSize(&mv);
+            createParamSegment(&mv, segSizes.paramSegSize);
 
-                // Si hay un .vmx, se carga el programa
-                if (mv.config.vmxPath != NULL) {
-                    // Inicializacion en 0 de tamanos de segmentos
-                    segSizes.extraSegSize = 0;
-                    segSizes.stackSegSize = 0;
-                    segSizes.constSegSize = 0;
+            // Si hay un .vmx, se carga el programa
+            if (mv.config.vmxPath != NULL) {
+                // Inicializacion en 0 de tamanos de segmentos
+                segSizes.extraSegSize = 0;
+                segSizes.stackSegSize = 0;
+                segSizes.constSegSize = 0;
 
-                    // Inicializacion en 0 del Entry Point
-                    offsetEP = 0;
+                // Inicializacion en 0 del Entry Point
+                mv.offsetEP = 0;
 
-                    // Lectura del header del .vmx
-                    readProgramHeader(&mv, &segSizes, &offsetEP);
+                // Lectura del header del .vmx
+                readProgramHeader(&mv, &segSizes);
 
-                    // Suma de los sizes para ver si sobrepasan el total de memoria
-                    if (sumSegSizes(&segSizes) > mv.totalMemorySize)
-                        errorHandler(&mv, ERR_MEM);
-                    else {
-                        // Inicializaciones de tabla de segmentos y registros
-                        initializeTable(&mv, &segSizes);
-                        initializeRegisters(&mv, &segSizes, offsetEP);
+                // Suma de los sizes para ver si sobrepasan el total de memoria
+                if (sumSegSizes(&segSizes) > mv.totalMemorySize)
+                    errorHandler(&mv, ERR_MEM);
+                else {
+                    // Inicializaciones de tabla de segmentos y registros
+                    initializeTable(&mv, &segSizes);
+                    initializeRegisters(&mv, &segSizes);
 
-                        // Carga de memoria
-                        loadProgramData(&mv, &segSizes);
-                    }
+                    // Carga de memoria
+                    loadProgramData(&mv, &segSizes);
                 }
-
-                // Si no hay .vmx pero sí .vmi, se carga la imagen
-                else if (mv.config.vmiPath != NULL) {
-                    readImage(&mv);
-                }
+            }
+            // Si no hay .vmx pero sí .vmi, se carga la imagen
+            else if (mv.config.vmiPath != NULL) {
+                readImage(&mv);
             }
 
             // --- Lógica de Ejecución ---
@@ -460,7 +469,7 @@ int main(int argc, char *argv[]) {
                 // Disassambler
                 if (mv.config.disassemblerFlag) {
                     disASM(&mv);
-                    initializeRegisters(&mv, &segSizes, offsetEP);
+                    initializeRegisters(&mv, &segSizes);
                 }
 
                 // Ejecucion del programa
@@ -514,8 +523,10 @@ void parseCommandLine(int argc, char* argv[], TMV* mv) {
             mv->config.disassemblerFlag = 1;
         }
         else if (strcmp(argv[i], "-p") == 0) {
-            mv->config.paramsArgc = argc - (i + 1);
-            mv->config.paramsArgv = &argv[i + 1];
+            if (i + 1 < argc) { // Solo procesar si hay algo después de -p
+                mv->config.paramsArgc = argc - (i + 1);
+                mv->config.paramsArgv = &argv[i + 1];
+            }
         }
     }
 
@@ -530,10 +541,15 @@ void parseCommandLine(int argc, char* argv[], TMV* mv) {
     }
 }
 
+void mallocMemory(TMV* mv) {
+    mv->totalMemorySize = mv->config.memoryKiB * 1024;
+    mv->mem = (UByte*) malloc(mv->totalMemorySize);
+}
+
 /**
  * @brief Lee únicamente el encabezado (header) de un archivo .vmx para obtener los tamaños de los segmentos y el punto de entrada.
  */
-void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP) {
+void readProgramHeader(TMV* mv, SegmentSizes* segSizes) {
     FILE* arch;
     UByte header[HEADER_P_RANGE];
 
@@ -552,7 +568,7 @@ void readProgramHeader(TMV* mv, SegmentSizes* segSizes, UWord* offsetEP) {
             segSizes->extraSegSize = ((UWord) header[10] << 8) | header[11];
             segSizes->stackSegSize = ((UWord) header[12] << 8) | header[13];
             segSizes->constSegSize = ((UWord) header[14] << 8) | header[15];
-            *offsetEP = ((UWord) header[16] << 8) | header[17];
+            mv->offsetEP = ((UWord) header[16] << 8) | header[17];
         }
 
         fclose(arch);
@@ -588,32 +604,90 @@ void loadProgramData(TMV* mv, SegmentSizes* segSizes) {
 void readImage(TMV* mv) {
     FILE* arch;
     UByte header[HEADER_I];
-    UWord memKiB;
+    int i;
 
     arch = fopen(mv->config.vmiPath, "rb");
     if (arch == NULL)
         errorHandler(mv, ERR_FOPEN);
     else {
-         // Header
+        // Header
         fread(header, sizeof(UByte), HEADER_I, arch);
 
         // Extraer tamaño de memoria y RESERVARLA
-        memKiB = ((UWord)header[6] << 8) | header[7];
-        mv->totalMemorySize = memKiB * 1024;
-        mv->mem = (UByte*) malloc(mv->totalMemorySize);
+        mv->config.memoryKiB = ((UWord)header[6] << 8) | header[7];
+        mallocMemory(mv);
 
         if (mv->mem == NULL)
             errorHandler(mv, ERR_MEM);
         else {
-            // Registros
-            fread(mv->reg, sizeof(Long), REG_AMOUNT, arch);
+            // Registros (leídos uno por uno)
+            for (i = 0; i < REG_AMOUNT; i++) {
+                mv->reg[i] = readLongBE(arch);
+            }
 
-            // Tabla de Segmentos
-            fread(mv->seg, sizeof(TableSeg), SEG_AMOUNT, arch);
+            // Tabla de Segmentos (leída campo por campo)
+            for (i = 0; i < SEG_AMOUNT; i++) {
+                mv->seg[i].base = readUWordBE(arch);
+                mv->seg[i].size = readUWordBE(arch);
+            }
 
-            // Memoria
+            // Memoria (leída en bloque)
             fread(mv->mem, sizeof(UByte), mv->totalMemorySize, arch);
         }
+
+        fclose(arch);
+    }
+}
+
+// Funcion auxiliar para leer un UWord (2 bytes) en un archivo en formato Big Endian
+UWord readUWordBE(FILE* arch) {
+    UWord data = 0;
+    data |= (fgetc(arch) << 8);
+    data |= fgetc(arch);
+    return data;
+}
+
+// Funcion auxiliar para leer un Long (4 bytes) en un archivo en formato Big Endian
+Long readLongBE(FILE* arch) {
+    Long data = 0;
+    data |= (fgetc(arch) << 24);
+    data |= (fgetc(arch) << 16);
+    data |= (fgetc(arch) << 8);
+    data |= fgetc(arch);
+    return data;
+}
+
+/**
+ * @brief Guarda el estado actual de la MV (memoria, registros, tabla) en un archivo de imagen .vmi en formato Big Endian.
+ */
+void writeImage(TMV* mv) {
+    FILE* arch;
+    UByte version = 1, i;
+    UWord memKiB = mv->totalMemorySize / 1024;
+
+    arch = fopen(mv->config.vmiPath, "wb");
+    if (arch == NULL)
+        errorHandler(mv, ERR_FOPEN);
+    else {
+        // Header
+        fwrite("VMI25", sizeof(char), 5, arch);
+        fputc(version, arch);
+        writeUWordBE(arch, memKiB);
+
+        // Registros
+        for (i = 0; i < REG_AMOUNT; i++) {
+            writeLongBE(arch, mv->reg[i]);
+        }
+
+        // Tabla de Descriptores
+        for (i = 0; i < SEG_AMOUNT; i++) {
+            writeUWordBE(arch, mv->seg[i].base);
+            writeUWordBE(arch, mv->seg[i].size);
+        }
+
+        // Memoria Principal
+        // Esto es un array de bytes, así que un fwrite directo está bien
+        fwrite(mv->mem, sizeof(UByte), mv->totalMemorySize, arch);
 
         fclose(arch);
     }
@@ -634,39 +708,18 @@ void writeLongBE(FILE* arch, Long data) {
 }
 
 /**
- * @brief Guarda el estado actual de la MV (memoria, registros, tabla) en un archivo de imagen .vmi en formato Big Endian.
+ * @brief Calcula el tamaño requerido en bytes para el Param Segment basándose en los argumentos de entrada.
  */
-void writeImage(TMV* mv) {
-    FILE* arch;
-    UByte version = 1, i;
-    UWord memKiB = mv->totalMemorySize / 1024;
+UWord calculatePSSize(TMV* mv) {
+    ULong psSize = 0;
+    int i;
 
-    arch = fopen(mv->config.vmiPath, "wb");
-    if (arch == NULL)
-        errorHandler(mv, ERR_FOPEN);
-    else {
-        // Header
-        fwrite("VMI25", sizeof(char), 5, arch);
-        fputc(version, arch);
-        writeUWordBE(arch, memKiB);
-        
-        // Registros
-        for (i = 0; i < REG_AMOUNT; i++) {
-            writeLongBE(arch, mv->reg[i]);
-        }
-
-        // Tabla de Descriptores
-        for (i = 0; i < SEG_AMOUNT; i++) {
-            writeUWordBE(arch, mv->seg[i].base);
-            writeUWordBE(arch, mv->seg[i].size);
-        }
-
-        // Memoria Principal
-        // Esto es un array de bytes, así que un fwrite directo está bien
-        fwrite(mv->mem, sizeof(UByte), mv->totalMemorySize, arch);
-
-        fclose(arch);
+    for (i = 0; i < mv->config.paramsArgc; i++) {
+        psSize += strlen(mv->config.paramsArgv[i]) + 1;
     }
+    psSize += mv->config.paramsArgc * sizeof(Long);
+
+    return psSize;
 }
 
 /**
@@ -683,21 +736,6 @@ ULong sumSegSizes(SegmentSizes* segSizes) {
     total += segSizes->paramSegSize;
 
     return total;
-}
-
-/**
- * @brief Calcula el tamaño requerido en bytes para el Param Segment basándose en los argumentos de entrada.
- */
-ULong calculatePSSize(TMV* mv) {
-    ULong psSize = 0;
-    int i;
-
-    for (i = 0; i < mv->config.paramsArgc; i++) {
-        psSize += strlen(mv->config.paramsArgv[i]) + 1;
-    }
-    psSize += (ULong) mv->config.paramsArgc * sizeof(Long);
-
-    return psSize;
 }
 
 /**
@@ -740,7 +778,7 @@ void initializeTable(TMV* mv, SegmentSizes* segSizes) {
     // Iteramos sobre SEG_AMOUNT (8) para cubrir todos los "slots" físicos de la tabla.
 
     for (i = 0; i < SEG_AMOUNT; i++) {
-        mv->seg[i].base = -1;   // En un UWord, -1 se convierte en 0xFFFF
+        mv->seg[i].base = NIL;
         mv->seg[i].size = 0;
     }
 
@@ -764,7 +802,7 @@ void initializeTable(TMV* mv, SegmentSizes* segSizes) {
 /**
  * @brief Inicializa todos los registros de la MV, incluyendo los punteros de segmento (CS, DS, etc.) y los punteros de ejecución (IP, SP).
  */
-void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP) {
+void initializeRegisters(TMV* mv, SegmentSizes* segSizes) {
     Long i = 0, tableIndex = 0, currentReg = 0;
     UWord currentSize = 0;
 
@@ -777,118 +815,207 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes, UWord offsetEP) {
             mv->reg[currentReg] = tableIndex << 16;
             tableIndex++;
         } else {
-            mv->reg[currentReg] = -1;
+            mv->reg[currentReg] = NIL;
         }
     }
 
     // Finalmente, inicializamos los punteros de ejecución (IP y SP).
-    mv->reg[IP] = mv->reg[CS] | offsetEP;
+    mv->reg[IP] = mv->reg[CS] | mv->offsetEP;
 
-    if (mv->reg[SS] != -1)
+    if (mv->reg[SS] != NIL) 
         mv->reg[SP] = mv->reg[SS] + mv->seg[mv->reg[SS] >> 16].size;
     else
-        mv->reg[SP] = -1;
+        mv->reg[SP] = NIL; // Si no hay pila, SP también es inválido
 }
 
-// Funcion para transformar un operando a bytes para el disassembler
-void disASMOP(TMV* mv, Long operand, Byte type) {
-    int i = type - 1;
-    UByte aux = 0;
-
-    for (; i >= 0; i--) {
-        aux = (UByte) (operand >> (8 * i));
-        printf("%02X ", aux);
-    }
-}
-
-// Funcion para transformar un operando a string para el disassembler
-void disASMOPStrToBuf(TMV* mv, Long operand, Byte type, char* buf, size_t buflen) {
-    operand &= MASK_UNTYPE;
-    switch (type) {
-        case 1:
-            snprintf(buf, buflen, "%s", regStr[operand]);
-            break;
-        case 2:
-            if (1 <= mv->reg[OPC] && mv->reg[OPC] <= 7)
-                snprintf(buf, buflen, "0x%04X", (Word) operand);
-            else
-                snprintf(buf, buflen, "%d", (Word) operand);
-            break;
-        case 3: {
-            char tmp[32];
-            snprintf(tmp, sizeof(tmp), "[%s", regStr[operand >> 16]);
-            size_t len = strlen(tmp);
-            operand = (Long)((Word)operand);
-            if (operand > 0)
-                strncat(tmp, "+", sizeof(tmp) - len - 1);
-            if (operand != 0) {
-                char num[16];
-                snprintf(num, sizeof(num), "%d", operand);
-                strncat(tmp, num, sizeof(tmp) - strlen(tmp) - 1);
-            }
-            strncat(tmp, "]", sizeof(tmp) - strlen(tmp) - 1);
-            snprintf(buf, buflen, "%s", tmp);
-            break;
-        }
-    }
-}
-
-// Funcion principal del disassembler
+/// --- DISASSAMBLER ---
+/**
+ * @brief Orquesta el proceso de desensamblado.
+ * Imprime primero el contenido del Const Segment y luego el del Code Segment.
+ */
 void disASM(TMV* mv) {
-    int i;
-    UByte ins = 0, typA = 0, typB = 0, typInsA = 0, typInsB = 0;
-    char op1Str[32], op2Str[32], mnemStr[16];
+    disASMPrintStrings(mv);
+    disASMPrintCode(mv);
+}
 
-    while (inCS(mv, mv->reg[IP])) {
-        fetchInstruction(mv);
-        fetchOperators(mv);
+/**
+ * @brief Desensambla y muestra el contenido del Const Segment como cadenas de caracteres.
+ */
+void disASMPrintStrings(TMV* mv) {
+    Long ksBase, currentAddr, len, maxHexBytes, i;
+    UWord offset;
+    UByte stringBytes[7], car;
+    char stringFull[256]; // Buffer para la string completa
 
-        // --- Primer mitad: posicion de memoria y bytes en hexadecimal ---
-        // Memoria
-        printf("[%04X] ", decodeAddr(mv, mv->reg[IP]));
+    if (mv->seg[decodeSeg(mv, KS)].size > 0) {
+        ksBase = mv->seg[decodeSeg(mv, KS)].base;
+        offset = 0;
 
-        // Formacion del byte de instruccion
-        typA = (UByte)(mv->reg[OP1] >> 24);
-        typB = (UByte)(mv->reg[OP2] >> 24);
-        typInsA = typA << 6;
-        typInsB = typB << 6;
-        if (typB != 0)
-            typInsA >>= 2;
-        ins = (UByte) mv->reg[OPC] | typInsB | typInsA;
+        while (offset < mv->seg[decodeSeg(mv, KS)].size) {
+            currentAddr = ksBase + offset;
+            len = 0;
 
-        // Bytes de instruccion
-        printf("%02X ", ins);
-        disASMOP(mv, mv->reg[OP2], typB);
-        disASMOP(mv, mv->reg[OP1], typA);
-        for (i = 6 - typA - typB; i > 0; i--)
-            printf("   ");
+            // Imprimir la dirección de memoria
+            printf(" [%04X] ", (UWord) currentAddr);
 
-        // --- Segunda mitad: mnemonico y operandos alineados ---
-        snprintf(mnemStr, sizeof(mnemStr), "%s", opStr[mv->reg[OPC]]);
-        op1Str[0] = 0;
-        op2Str[0] = 0;
-        disASMOPStrToBuf(mv, mv->reg[OP1], typA, op1Str, sizeof(op1Str));
-        disASMOPStrToBuf(mv, mv->reg[OP2], typB, op2Str, sizeof(op2Str));
+            // Leer la string completa para mostrarla
+            while (mv->mem[currentAddr + len] != '\0') {
+                car = mv->mem[currentAddr + len];
+                // Reemplazar no imprimibles por '.'
+                stringFull[len] = (32 <= car && car <= 126) ? car : '.';
+                len++;
+            }
+            stringFull[len] = '\0'; // Terminar la string
 
-        if (typB != 0) {
-            // OP1 alineado a la derecha, coma pegada, OP2 alineado a la derecha
-            printf("|  %-*s%*s,%*s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str, OP2_WIDTH, op2Str);
-        } else {
-            // Solo OP1 alineado a la derecha
-            printf("|  %-*s%*s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str);
+            // Determinar cuántos bytes hexadecimales mostrar
+            maxHexBytes = (len + 1 > 7) ? 7 : len + 1;
+
+            // Imprimir los bytes en hexadecimal
+            for (i = 0; i < maxHexBytes; i++) {
+                printf("%02X ", mv->mem[currentAddr + i]);
+            }
+
+            // Indicar que la cadena continúa
+            if (len + 1 > 7) {
+                printf(".. "); 
+            }
+
+            // Relleno para alinear
+            for (i = 0; i < 8 - maxHexBytes; i++) {
+                printf("   "); 
+            }
+
+            // Imprimir la cadena de caracteres
+            printf("| \"%s\"\n", stringFull);
+
+            // Mover el offset a la siguiente cadena
+            offset += len + 1;
         }
-
-        mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
     }
 }
 
 /**
+ * @brief Desensambla y muestra las instrucciones del Code Segment.
+ */
+void disASMPrintCode(TMV* mv) {
+    UByte instrSize, i;
+    Long instrPoint;
+    char op1Str[32], op2Str[32], mnemStr[16];
+
+    while (inCS(mv, mv->reg[IP])) {
+        printf("%c", ((mv->reg[IP] & 0xFFFF) == mv->offsetEP) ? '>' : ' ');
+
+        // Imprimir la dirección física de la instrucción
+        instrPoint = decodeAddr(mv, mv->reg[IP]);
+        printf("[%04X] ", (UWord)instrPoint);
+        
+        // Obtener la información de la instrucción
+        fetchInstruction(mv);
+        fetchOperators(mv);
+        
+        // --- Impresión de los Bytes Hexadecimales ---
+        instrSize = 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
+        for(i = 0; i < instrSize; i++) {
+            printf("%02X ", mv->mem[instrPoint + i]);
+        }
+        // Relleno para alinear la barra vertical
+        for(i = 0; i < 8 - instrSize; i++) {
+            printf("   ");
+        }
+
+        // --- Construcción de las Cadenas de Texto ---
+        snprintf(mnemStr, sizeof(mnemStr), "%s", opStr[mv->reg[OPC]]);
+        disASMOPStrToBuf(mv, mv->reg[OP1], (mv->reg[OP1] >> 24), op1Str, sizeof(op1Str));
+        disASMOPStrToBuf(mv, mv->reg[OP2], (mv->reg[OP2] >> 24), op2Str, sizeof(op2Str));
+        
+        // Agregar la coma al final del primer operando si existe un segundo operando
+        if (op2Str[0] != '\0') {
+            strcat(op1Str, ",");
+        }
+
+        // --- Impresión Final con Formato de Tres Columnas ---
+        // Imprime el mnemónico y los operandos en tres columnas separadas y alineadas a la izquierda.
+        printf("| %-*s %-*s %s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str, op2Str);
+        
+        // Avanzar el IP a la siguiente instrucción
+        addIP(mv);
+    }
+}
+
+/**
+ * @brief Convierte un operando codificado en una cadena de texto legible para el disassembler.
+ * Maneja los pseudónimos de registro (AX, AL, AH) y los modificadores de memoria (b[], w[]).
+ */
+void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t buflen) {
+    UByte size, regIndex;
+    Word offset;
+    char baseChar[2];
+    char* modifier = "";
+
+    baseChar[0] = 0;
+    baseChar[1] = 0;
+    size = (operand >> 22) & 0x03;
+    regIndex = (operand >> 16) & 0x1F;
+
+    switch (type) {
+        case 1: { // REGISTRO
+            if (EAX <= regIndex && regIndex <= EFX) {
+                // Si es un registro de proposito general, construimos el pseudónimo
+                baseChar[0] = regStr[regIndex][1];
+                switch (size) {
+                    case 0: // 4 bytes
+                        snprintf(buf, buflen, "%s", regStr[regIndex]);
+                        break;
+                    case 1: // Cuarto byte
+                        snprintf(buf, buflen, "%sL", baseChar);
+                        break;
+                    case 2: // Tercer byte
+                        snprintf(buf, buflen, "%sH", baseChar);
+                        break;
+                    case 3: // 2 bytes
+                        snprintf(buf, buflen, "%sX", baseChar);
+                        break;
+                }   
+            } 
+            else
+                snprintf(buf, buflen, "%s", regStr[regIndex]);  // Para todos los demás registros simplemente usamos su nombre.
+            break;
+        }
+        case 2: { // INMEDIATO
+            // Mostrar saltos en hexadecimal
+            if ((JMP <= mv->reg[OPC] && mv->reg[OPC] <= JNN) || mv->reg[OPC] == CALL)
+                snprintf(buf, buflen, "0x%04X", (Word) operand);
+            else
+                snprintf(buf, buflen, "%d", (Word) operand);
+            break;
+        }
+        case 3: { // MEMORIA
+            switch (size) {
+                case 0: // long
+                    modifier = "l";
+                    break;
+                case 2: // word
+                    modifier = "w";
+                    break;
+                case 3: // byte
+                    modifier = "b";
+                    break;
+            }
+
+            offset = (Word) (operand & 0xFFFF);            
+            snprintf(buf, buflen, "%s[%s%s%d]", modifier, regStr[regIndex], (offset >= 0 ? "+" : ""), offset);
+            break;
+        }
+    }
+}
+
+/// --- EXECUTE PROGRAM ---
+/**
  * @brief Bucle principal de ejecución. Ejecuta instrucciones una por una mientras el IP esté en el Code Segment.
  */
 void executeProgram(TMV* mv) {
-    //fpush
-    //fpush(mv, mv->config.paramArgc, 0);
-    //fpush(mv, -1, 0);
+    initializeMainStack(mv);
+
     while (mv->errorFlag == 0 && inCS(mv, mv->reg[IP])) {
         executeOneInstruction(mv);
     }
@@ -928,6 +1055,32 @@ void executeOneInstruction(TMV* mv) {
 }
 
 /**
+ * @brief Prepara la pila con los valores iniciales para la subrutina main, reutilizando fpush.
+ */
+void initializeMainStack(TMV* mv) {
+    UWord psSize;
+    Long valueToPush, argvArraySize;
+
+    // PUSH del puntero a argv
+    valueToPush = NIL; // Valor por defecto si no hay parámetros
+    if (mv->config.paramsArgc > 0) {
+        psSize = calculatePSSize(mv);
+        argvArraySize = mv->config.paramsArgc * sizeof(Long);
+        valueToPush = mv->reg[PS] | (psSize - argvArraySize);
+    }
+    fpush(mv, &valueToPush, NULL);
+    
+    // PUSH de argc
+    valueToPush = mv->config.paramsArgc;
+    fpush(mv, &valueToPush, NULL);
+
+    // PUSH de la dirección de retorno (-1)
+    valueToPush = NIL;
+    fpush(mv, &valueToPush, NULL);
+}
+
+/// --- DECODIFICADORES ---
+/**
  * @brief Obtiene el índice de la tabla de segmentos a partir de un puntero lógico de segmento.
  */
 Long decodeSeg(TMV* mv, Long cod) {
@@ -961,13 +1114,10 @@ int inSegment(TMV* mv, Long logical) {
  * @brief Verifica si una dirección lógica pertenece al Code Segment.
  */
 int inCS(TMV* mv, Long logical) {
-    return ((logical >> 16) == (decodeSeg(mv, CS))) && inSegment(mv, logical);
+    return ((logical >> 16) == (mv->reg[CS] >> 16)) && inSegment(mv, logical);
 }
 
-void addIP(TMV* mv) {
-    mv->reg[IP] += (Long) (1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24));
-}
-
+/// --- INICIO DE INSTRUCCION ---
 // Agarra un byte de instruccion. Setea OPC, el tipo de OP1 y el tipo de OP2
 void fetchInstruction(TMV* mv) {
     Byte temp;
@@ -984,6 +1134,17 @@ void fetchInstruction(TMV* mv) {
         mv->reg[OP2] = mv->reg[OP1];
         mv->reg[OP1] = (Long)(temp & MASKB_OP1) << 20;
     }
+}
+
+// Prepara a los operandos para que reciban su informacion
+void fetchOperators(TMV* mv) {
+    int op1Bytes, op2Bytes, offset = 1;
+
+    op2Bytes = mv->reg[OP2] >> 24;
+    op1Bytes = mv->reg[OP1] >> 24;
+    mv->reg[OP2] |= fetchOperand(mv, op2Bytes, &offset);
+    if (mv->errorFlag == 0)
+        mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
 }
 
 // Crea un registro para un operando y lo retorna
@@ -1008,33 +1169,39 @@ Long fetchOperand(TMV* mv, int bytes, int* offset) {
     return temp;
 }
 
-// Prepara a los operandos para que reciban su informacion
-void fetchOperators(TMV* mv) {
-    int op1Bytes, op2Bytes, offset = 1;
-
-    op2Bytes = mv->reg[OP2] >> 24;
-    op1Bytes = mv->reg[OP1] >> 24;
-    mv->reg[OP2] |= fetchOperand(mv, op2Bytes, &offset);
-    if (mv->errorFlag == 0)
-        mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
+void addIP(TMV* mv) {
+    mv->reg[IP] += (Long) (1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24));
 }
 
-// Seteo del valor del LAR cuando se trabaja con memoria
-void setLAR(TMV* mv, Long operand) {
-    Byte cod;
+/// --- MEMORIA ---
+/**
+ * @brief Calcula una dirección lógica a partir de un operando de memoria [reg+off] y la guarda en LAR.
+ */
+void setLARFromOperand(TMV* mv, Long operand) {
+    UByte baseRegIndex;
     Word offset;
-    Long logical;
+    Long logicalAddress;
 
-    if (mv->reg[OPC] != SYS) {
-        cod = (Byte) ((operand & MASK_REG) >> 16);
-        offset = (Word) (operand & MASK_OFFSET);
-        logical = mv->reg[cod] + offset;
-    }
-    else
-        logical = operand;
-    if (!inSegment(mv, logical))
+    baseRegIndex = (operand >> 16) & 0x1F;
+    offset = (Word) operand;
+
+    // Obtiene el valor del registro base y le suma el offset
+    logicalAddress = mv->reg[baseRegIndex] + offset;
+
+    if (!inSegment(mv, logicalAddress))
         errorHandler(mv, ERR_SEG);
-    mv->reg[LAR] = logical;
+    else
+        mv->reg[LAR] = logicalAddress;
+}
+
+/**
+ * @brief Valida una dirección lógica que ya está calculada y la guarda en LAR.
+ */
+void setLARFromAddress(TMV* mv, Long logicalAddress) {
+    if (!inSegment(mv, logicalAddress))
+        errorHandler(mv, ERR_SEG);
+    else
+        mv->reg[LAR] = logicalAddress;
 }
 
 // Seteo del valor del MAR cuando se trabaja con memoria
@@ -1082,48 +1249,105 @@ void setMemory(TMV* mv) {
     }
 }
 
-// Decodificar el operador y devolver su valor
+/// --- OPERATORS ---
+/**
+ * @brief Obtiene el valor de un operando, considerando su tipo y tamaño variable.
+ * Siempre devuelve un Long (32 bits) con el signo extendido.
+ */
 Long getOP(TMV* mv, Long operand) {
-    Byte tipo = operand >> 24;
-    Long res;
+    UByte tipo, size, cantBytes, regIndex;
+    Long res = 0, shift;
 
-    operand &= MASK_UNTYPE;
+    tipo = operand >> 24;               // Los 2 bits de tipo
+    size = (operand >> 22) & 0x03;      // Los 2 bits de tamano
 
     switch (tipo) {
-        case 1:
-            res = mv->reg[operand];
+        case 1: { // REGISTRO (extendido, sin prefijo, sufijo L, sufijo H)
+            regIndex = (operand >> 16) & 0x1F;       // Los 5 bits del registro
+
+            switch (size) {
+                case 0: // extendido (4 bytes)
+                    res = mv->reg[regIndex];
+                    break;
+                case 1: // sufijo L (cuarto byte)
+                    res = mv->reg[regIndex] & 0xFF;
+                    if (res & 0x80) res |= 0xFFFFFF00; // Extensión de signo
+                    break;
+                case 2: // sufijo H (tercer byte)
+                    res = (mv->reg[regIndex] >> 8) & 0xFF;
+                    if (res & 0x80) res |= 0xFFFFFF00; // Extensión de signo
+                    break;
+                case 3: // sin prefijo (2 bytes)
+                    res = mv->reg[regIndex] & 0xFFFF;
+                    if (res & 0x8000) res |= 0xFFFF0000; // Extensión de signo
+                    break;
+            }
             break;
-        case 2:
-            res = operand;
-            if (res & 0x00800000)
-                res |= 0xFF000000;
+        }
+        case 2: { // INMEDIATO
+            res = (Word) operand;
             break;
-        case 3:
-            setLAR(mv, operand);
-            setMAR(mv, 4, mv->reg[LAR]);
-            getMemory(mv);
+        }
+        case 3: { // MEMORIA (b, w, l)
+            cantBytes = 4 - size;
+
+            setLARFromOperand(mv, operand & 0x003FFFFF); // Pasamos el operando sin los bits de tamaño
+            setMAR(mv, cantBytes, mv->reg[LAR]);
+            getMemory(mv); // getMemory ahora lee 'cantBytes' en MBR
             res = mv->reg[MBR];
+
+            // Extensión de signo manual después de la lectura
+            if (cantBytes < 4) {
+                shift = (4 - cantBytes) * 8;
+                // Movemos el valor a la izquierda y luego de vuelta a la derecha
+                // para que el bit de signo se propague.
+                res = (res << shift) >> shift;
+            }
             break;
+        }
     }
 
     return res;
 }
 
-// Setear el registro o memoria de operadorA con el valor de operadorB
+/**
+ * @brief Asigna un valor a un operando, considerando su tipo y tamaño variable.
+ */
 void setOP(TMV* mv, Long operandA, Long operandB) {
-    Byte tipo = operandA >> 24;
+    UByte tipo, size, regIndex, cantBytes;
 
-    operandA &= MASK_UNTYPE;
+    tipo = operandA >> 24;
+    size = (operandA >> 22) & 0x03;
+
     switch (tipo) {
-        case 1:
-            mv->reg[operandA] = operandB;
+        case 1: { // REGISTRO
+            regIndex = operandA & 0x1F;
+
+            switch (size) {
+                case 0: // Extendido: se reemplaza todo el registro
+                    mv->reg[regIndex] = operandB;
+                    break;
+                case 1: // Cuarto byte: solo se modifica el byte bajo
+                    mv->reg[regIndex] = (mv->reg[regIndex] & 0xFFFFFF00) | (operandB & 0xFF);
+                    break;
+                case 2: // Tercer byte: solo se modifica el segundo byte bajo
+                    mv->reg[regIndex] = (mv->reg[regIndex] & 0xFFFF00FF) | ((operandB & 0xFF) << 8);
+                    break;
+                case 3: // Dos bytes: solo se modifican los 2 bytes bajos
+                    mv->reg[regIndex] = (mv->reg[regIndex] & 0xFFFF0000) | (operandB & 0xFFFF);
+                    break;
+            }
             break;
-        case 3:
-            setLAR(mv, operandA);
-            setMAR(mv, 4, mv->reg[LAR]);
-            mv->reg[MBR] = operandB;
+        }
+        case 3: { // MEMORIA
+            cantBytes = 4 - size;
+
+            setLARFromOperand(mv, operandA & 0x003FFFFF);
+            setMAR(mv, cantBytes, mv->reg[LAR]);
+            mv->reg[MBR] = operandB; // setMemory truncará el valor a 'cantBytes'
             setMemory(mv);
             break;
+        }
     }
 }
 
@@ -1140,6 +1364,14 @@ void setCC(TMV* mv, Long valor) {
         mv->reg[CC] &= 0x7FFFFFFF;
 }
 
+/// --- SYS ---
+// Funcion SYS - Llamadas al sistema
+void fsys(TMV* mv, Long* value1, Long* value2) {
+    if (sysTable[*value1]) {
+        sysTable[*value1](mv);
+    }
+}
+
 // SYS Read
 void fsysRead(TMV* mv) {
     Long read = 0;
@@ -1150,7 +1382,7 @@ void fsysRead(TMV* mv) {
     cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
 
     while (mv->errorFlag == 0 && i < cantCeldas) {
-        setLAR(mv, mv->reg[EDX] + cantBytes * i);
+        setLARFromAddress(mv, mv->reg[EDX] + cantBytes * i);
         setMAR(mv, cantBytes, mv->reg[LAR]);
 
         if (mv->errorFlag == 0) {
@@ -1246,7 +1478,7 @@ void fsysWrite(TMV* mv) {
     cantBytes = (mv->reg[ECX] & MASK_LDH) >> 16;
 
     while (mv->errorFlag == 0 && i < cantCeldas) {
-        setLAR(mv, mv->reg[EDX] + cantBytes * i);
+        setLARFromAddress(mv, mv->reg[EDX] + cantBytes * i);
         setMAR(mv, cantBytes, mv->reg[LAR]);
         getMemory(mv);
         write = mv->reg[MBR];
@@ -1283,6 +1515,58 @@ void fsysWrite(TMV* mv) {
     }
 }
 
+void fsysStrRead(TMV* mv) {
+    UWord cantMaxCar, i = 0;
+    char car;
+
+    cantMaxCar = (UWord) mv->reg[ECX];
+
+    // Leemos caracter por caracter hasta Enter, fin de archivo, o el límite
+    while ((cantMaxCar == NIL || i < cantMaxCar) && (car = getchar()) != '\n' && car != EOF) {
+        setLARFromAddress(mv, mv->reg[EDX] + i);
+        setMAR(mv, 1, mv->reg[LAR]);
+        mv->reg[MBR] = (Long)car;
+        setMemory(mv);
+        i++;
+    }
+    
+    // Escribimos el terminador nulo '\0' al final
+    setLARFromAddress(mv, mv->reg[EDX] + i);
+    setMAR(mv, 1, mv->reg[LAR]);
+    mv->reg[MBR] = '\0';
+    setMemory(mv);
+}
+
+void fsysStrWrite(TMV* mv) {
+    Long currentAddr;
+    char car;
+
+    currentAddr = mv->reg[EDX];
+    car = ' ';
+
+    while (car != '\0' && mv->errorFlag == 0) {
+        setLARFromAddress(mv, currentAddr);
+        setMAR(mv, 1, mv->reg[LAR]);
+        getMemory(mv);
+        
+        car = (char) mv->reg[MBR];
+        if (car != '\0') {
+            printf("%c", car);
+        }
+        currentAddr++;
+    }
+}
+
+/**
+ * @brief Limpia la pantalla de la consola (SYS 0x07).
+ */
+void fsysClrScr(TMV* mv) {
+    // La secuencia "\033[2J" borra toda la pantalla.
+    // La secuencia "\033[H" mueve el cursor a la posición inicial (fila 1, columna 1).
+    printf("\033[2J\033[H");
+    fflush(stdout); // Asegura que la limpieza se muestre inmediatamente.
+}
+
 /**
  * @brief Maneja la lógica del BREAKPOINT (SYS 0x0F), guardando la imagen de la MV y esperando comandos del usuario.
  */
@@ -1307,20 +1591,14 @@ void fsysBreakpoint(TMV* mv) {
 
         // Si salimos del bucle por presionar 'q', marcamos el fin del programa
         if (car == 'q') {
-            mv->reg[IP] = -1;
+            mv->reg[IP] = NIL;
         }
 
         mv->breakFlag = 0; // Desactivamos la bandera al salir del breakpoint
     }
 }
 
-// Funcion SYS - Llamadas al sistema
-void fsys(TMV* mv, Long* value1, Long* value2) {
-    if (sysTable[*value1]) {
-        sysTable[*value1](mv);
-    }
-}
-
+/// --- MICRO SEQUENCE LOGIC ---
 // Funcion de centralizada de logica de saltos
 void fmsl(TMV* mv, Long* value1, Long* value2) {
     if (condVector[mv->reg[OPC]](mv)) {
@@ -1339,14 +1617,56 @@ Long fjn(TMV* mv) {
     return mv->reg[CC] & CC_N;
 }
 
+/// --- OPERACIONES ---
 // Instruccion NOT - Niega bit a bit
 void fnot(TMV* mv, Long* value1, Long* value2) {
     *value1 = ~ *value1;
 }
 
+void fpush(TMV* mv, Long* value1, Long* value2) {
+    mv->reg[SP] -= 4;
+    if (decodeAddr(mv, mv->reg[SP]) < decodeAddr(mv, mv->reg[SS]))
+        errorHandler(mv, ERR_SOF);
+    else {
+        setLARFromAddress(mv, mv->reg[SP]);
+        setMAR(mv, 4, mv->reg[LAR]);
+        mv->reg[MBR] = *value1;
+        setMemory(mv);
+    }
+}
+
+void fpop(TMV* mv, Long* value1, Long* value2) {
+    Long stackEndAddress;
+
+    stackEndAddress = mv->reg[SS] + mv->seg[decodeSeg(mv, SS)].size;
+    if (mv->reg[SP] >= stackEndAddress)
+        errorHandler(mv, ERR_SUF);
+    else {
+        setLARFromAddress(mv, mv->reg[SP]);
+        setMAR(mv, 4, mv->reg[LAR]);
+        getMemory(mv);
+        *value1 = mv->reg[MBR];
+        mv->reg[SP] += 4;
+    }
+}
+
+void fcall(TMV* mv, Long* value1, Long* value2) {
+    Long returnAddr;
+    
+    returnAddr = mv->reg[IP];
+    fpush(mv, &returnAddr, NULL);
+    mv->reg[IP] &= MASK_LDH;
+    mv->reg[IP] |= (*value1 & MASK_LDL);
+}
+
+void fret(TMV* mv, Long* value1, Long* value2) {
+    fpop(mv, value1, value2);
+    mv->reg[IP] = *value1;
+}
+
 // Instruccion STOP - Setea IP a STOP_VALUE
 void fstop(TMV* mv, Long* value1, Long* value2) {
-    mv->reg[IP] = STOP_VALUE;
+    mv->reg[IP] = NIL;
 }
 
 // Instruccion MOV - Paso el valor de value2 a value1
