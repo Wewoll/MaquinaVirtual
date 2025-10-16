@@ -18,6 +18,13 @@
 // Cantidad de segmentos en base al mapa del layout de la memoria (6)
 #define NUM_SEGMENTS     (sizeof(segmentLayoutMap) / sizeof(SegmentLayout))
 
+// Constantes para el parseo de la línea de comandos
+#define ARG_VMX ".vmx"
+#define ARG_VMI ".vmi"
+#define ARG_MEM "m="
+#define ARG_DISASM "-d"
+#define ARG_PARAMS "-p"
+
 // Cantidades de bytes de header del .vmx
 #define HEADER_P_RANGE      18
 #define HEADER_P_COMUN      8
@@ -29,10 +36,10 @@
 #define OP1_WIDTH  14
 #define OP2_WIDTH  10
 
-// Mascaras para extraer los OP
-#define MASKB_OPC 0b00011111
-#define MASKB_OP1 0b00110000
-#define MASKB_OP2 0b11000000
+// Constantes para extraer los OP
+#define MASKB_OPC       0b00011111
+#define MASKB_OP1       0b00110000
+#define MASKB_OP2       0b11000000
 
 // Mascaras para CC
 #define CC_N 0x80000000
@@ -66,7 +73,7 @@ typedef struct {
 typedef struct {
     char*       vmxPath;
     char*       vmiPath;
-    Long        memoryKiB;
+    ULong       memoryKiB;
     Byte        disassemblerFlag;
     Long        paramsArgc;          // Cantidad de parámetros para el programa
     char**      paramsArgv;          // Puntero a los parámetros en el argv original
@@ -248,8 +255,7 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes);
 
 // Prototipos del disassambler
 void disASM(TMV* mv);
-void disASMPrintStrings(TMV* mv);
-void disASMPrintCode(TMV* mv);
+void disASMOP(TMV* mv, Long operand, Byte type);
 void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t buflen);
 
 // Ejecucion del programa
@@ -414,6 +420,7 @@ static const CondFunc condVector[8] = {
 int main(int argc, char *argv[]) {
     TMV mv;
     SegmentSizes segSizes;
+    //int i = 0;
 
     mv.errorFlag = 0;
     mv.breakFlag = 0;
@@ -510,19 +517,19 @@ void parseCommandLine(int argc, char* argv[], TMV* mv) {
 
     // Iterar y parsear
     for (i = 1; i < argc; i++) {
-        if (strstr(argv[i], ".vmx")) {
+        if (strstr(argv[i], ARG_VMX)) {
             mv->config.vmxPath = argv[i];
         }
-        else if (strstr(argv[i], ".vmi")) {
+        else if (strstr(argv[i], ARG_VMI)) {
             mv->config.vmiPath = argv[i];
         }
-        else if (strncmp(argv[i], "m=", 2) == 0) {
+        else if (strncmp(argv[i], ARG_MEM, 2) == 0) {
             sscanf(argv[i], "m=%d", &mv->config.memoryKiB);
         }
-        else if (strcmp(argv[i], "-d") == 0) {
+        else if (strcmp(argv[i], ARG_DISASM) == 0) {
             mv->config.disassemblerFlag = 1;
         }
-        else if (strcmp(argv[i], "-p") == 0) {
+        else if (strcmp(argv[i], ARG_PARAMS) == 0) {
             if (i + 1 < argc) { // Solo procesar si hay algo después de -p
                 mv->config.paramsArgc = argc - (i + 1);
                 mv->config.paramsArgv = &argv[i + 1];
@@ -786,7 +793,7 @@ void initializeTable(TMV* mv, SegmentSizes* segSizes) {
     // Iteramos sobre el mapa que define el orden y la metadata.
     for (i = 0; i < NUM_SEGMENTS; i++) {
         // Obtenemos el tamaño del segmento actual de forma automática.
-        currentSize = *(UWord*)((Byte*)segSizes + segmentLayoutMap[i].size_offset);
+        currentSize = *(UWord*)((UByte*)segSizes + segmentLayoutMap[i].size_offset);
 
         if (currentSize > 0) {
             // Si el segmento tiene tamaño, le creamos una entrada en la tabla.
@@ -808,7 +815,7 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes) {
 
     // Iteramos sobre el mapa para asignar los registros de segmento.
     for (i = 0; i < NUM_SEGMENTS; i++) {
-        currentSize = *(UWord*)((Byte*)segSizes + segmentLayoutMap[i].size_offset);
+        currentSize = *(UWord*)((UByte*)segSizes + segmentLayoutMap[i].size_offset);
         currentReg = segmentLayoutMap[i].reg;
 
         if (currentSize > 0) {
@@ -822,190 +829,101 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes) {
     // Finalmente, inicializamos los punteros de ejecución (IP y SP).
     mv->reg[IP] = mv->reg[CS] | mv->offsetEP;
 
-    if (mv->reg[SS] != NIL) 
+    if (mv->reg[SS] != NIL)
         mv->reg[SP] = mv->reg[SS] + mv->seg[mv->reg[SS] >> 16].size;
     else
         mv->reg[SP] = NIL; // Si no hay pila, SP también es inválido
 }
 
-/// --- DISASSAMBLER ---
-/**
- * @brief Orquesta el proceso de desensamblado.
- * Imprime primero el contenido del Const Segment y luego el del Code Segment.
- */
-void disASM(TMV* mv) {
-    disASMPrintStrings(mv);
-    disASMPrintCode(mv);
-}
+// Funcion para transformar un operando a bytes para el disassembler
+void disASMOP(TMV* mv, Long operand, Byte type) {
+    int i = type - 1;
+    UByte aux = 0;
 
-/**
- * @brief Desensambla y muestra el contenido del Const Segment como cadenas de caracteres.
- */
-void disASMPrintStrings(TMV* mv) {
-    Long ksBase, currentAddr, len, maxHexBytes, i;
-    UWord offset;
-    UByte stringBytes[7], car;
-    char stringFull[256]; // Buffer para la string completa
-
-    if (mv->seg[decodeSeg(mv, KS)].size > 0) {
-        ksBase = mv->seg[decodeSeg(mv, KS)].base;
-        offset = 0;
-
-        while (offset < mv->seg[decodeSeg(mv, KS)].size) {
-            currentAddr = ksBase + offset;
-            len = 0;
-
-            // Imprimir la dirección de memoria
-            printf(" [%04X] ", (UWord) currentAddr);
-
-            // Leer la string completa para mostrarla
-            while (mv->mem[currentAddr + len] != '\0') {
-                car = mv->mem[currentAddr + len];
-                // Reemplazar no imprimibles por '.'
-                stringFull[len] = (32 <= car && car <= 126) ? car : '.';
-                len++;
-            }
-            stringFull[len] = '\0'; // Terminar la string
-
-            // Determinar cuántos bytes hexadecimales mostrar
-            maxHexBytes = (len + 1 > 7) ? 7 : len + 1;
-
-            // Imprimir los bytes en hexadecimal
-            for (i = 0; i < maxHexBytes; i++) {
-                printf("%02X ", mv->mem[currentAddr + i]);
-            }
-
-            // Indicar que la cadena continúa
-            if (len + 1 > 7) {
-                printf(".. "); 
-            }
-
-            // Relleno para alinear
-            for (i = 0; i < 8 - maxHexBytes; i++) {
-                printf("   "); 
-            }
-
-            // Imprimir la cadena de caracteres
-            printf("| \"%s\"\n", stringFull);
-
-            // Mover el offset a la siguiente cadena
-            offset += len + 1;
-        }
+    for (; i >= 0; i--) {
+        aux = (UByte) (operand >> (8 * i));
+        printf("%02X ", aux);
     }
 }
 
-/**
- * @brief Desensambla y muestra las instrucciones del Code Segment.
- */
-void disASMPrintCode(TMV* mv) {
-    UByte instrSize, i;
-    Long instrPoint;
-    char op1Str[32], op2Str[32], mnemStr[16];
-
-    while (inCS(mv, mv->reg[IP])) {
-        printf("%c", ((mv->reg[IP] & 0xFFFF) == mv->offsetEP) ? '>' : ' ');
-
-        // Imprimir la dirección física de la instrucción
-        instrPoint = decodeAddr(mv, mv->reg[IP]);
-        printf("[%04X] ", (UWord)instrPoint);
-        
-        // Obtener la información de la instrucción
-        fetchInstruction(mv);
-        fetchOperators(mv);
-        
-        // --- Impresión de los Bytes Hexadecimales ---
-        instrSize = 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
-        for(i = 0; i < instrSize; i++) {
-            printf("%02X ", mv->mem[instrPoint + i]);
-        }
-        // Relleno para alinear la barra vertical
-        for(i = 0; i < 8 - instrSize; i++) {
-            printf("   ");
-        }
-
-        // --- Construcción de las Cadenas de Texto ---
-        snprintf(mnemStr, sizeof(mnemStr), "%s", opStr[mv->reg[OPC]]);
-        disASMOPStrToBuf(mv, mv->reg[OP1], (mv->reg[OP1] >> 24), op1Str, sizeof(op1Str));
-        disASMOPStrToBuf(mv, mv->reg[OP2], (mv->reg[OP2] >> 24), op2Str, sizeof(op2Str));
-        
-        // Agregar la coma al final del primer operando si existe un segundo operando
-        if (op2Str[0] != '\0') {
-            strcat(op1Str, ",");
-        }
-
-        // --- Impresión Final con Formato de Tres Columnas ---
-        // Imprime el mnemónico y los operandos en tres columnas separadas y alineadas a la izquierda.
-        printf("| %-*s %-*s %s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str, op2Str);
-        
-        // Avanzar el IP a la siguiente instrucción
-        addIP(mv);
-    }
-}
-
-/**
- * @brief Convierte un operando codificado en una cadena de texto legible para el disassembler.
- * Maneja los pseudónimos de registro (AX, AL, AH) y los modificadores de memoria (b[], w[]).
- */
+// Funcion para transformar un operando a string para el disassembler
 void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t buflen) {
-    UByte size, regIndex;
-    Word offset;
-    char baseChar[2];
-    char* modifier = "";
-
-    baseChar[0] = 0;
-    baseChar[1] = 0;
-    size = (operand >> 22) & 0x03;
-    regIndex = (operand >> 16) & 0x1F;
-
+    operand &= MASK_UNTYPE;
     switch (type) {
-        case 1: { // REGISTRO
-            if (EAX <= regIndex && regIndex <= EFX) {
-                // Si es un registro de proposito general, construimos el pseudónimo
-                baseChar[0] = regStr[regIndex][1];
-                switch (size) {
-                    case 0: // 4 bytes
-                        snprintf(buf, buflen, "%s", regStr[regIndex]);
-                        break;
-                    case 1: // Cuarto byte
-                        snprintf(buf, buflen, "%sL", baseChar);
-                        break;
-                    case 2: // Tercer byte
-                        snprintf(buf, buflen, "%sH", baseChar);
-                        break;
-                    case 3: // 2 bytes
-                        snprintf(buf, buflen, "%sX", baseChar);
-                        break;
-                }   
-            } 
-            else
-                snprintf(buf, buflen, "%s", regStr[regIndex]);  // Para todos los demás registros simplemente usamos su nombre.
+        case 1:
+            snprintf(buf, buflen, "%s", regStr[operand]);
             break;
-        }
-        case 2: { // INMEDIATO
-            // Mostrar saltos en hexadecimal
-            if ((JMP <= mv->reg[OPC] && mv->reg[OPC] <= JNN) || mv->reg[OPC] == CALL)
+        case 2:
+            if (1 <= mv->reg[OPC] && mv->reg[OPC] <= 7)
                 snprintf(buf, buflen, "0x%04X", (Word) operand);
             else
                 snprintf(buf, buflen, "%d", (Word) operand);
             break;
-        }
-        case 3: { // MEMORIA
-            switch (size) {
-                case 0: // long
-                    modifier = "l";
-                    break;
-                case 2: // word
-                    modifier = "w";
-                    break;
-                case 3: // byte
-                    modifier = "b";
-                    break;
+        case 3: {
+            char tmp[32];
+            snprintf(tmp, sizeof(tmp), "[%s", regStr[operand >> 16]);
+            size_t len = strlen(tmp);
+            operand = (Long)((Word)operand);
+            if (operand > 0)
+                strncat(tmp, "+", sizeof(tmp) - len - 1);
+            if (operand != 0) {
+                char num[16];
+                snprintf(num, sizeof(num), "%d", operand);
+                strncat(tmp, num, sizeof(tmp) - strlen(tmp) - 1);
             }
-
-            offset = (Word) (operand & 0xFFFF);            
-            snprintf(buf, buflen, "%s[%s%s%d]", modifier, regStr[regIndex], (offset >= 0 ? "+" : ""), offset);
+            strncat(tmp, "]", sizeof(tmp) - strlen(tmp) - 1);
+            snprintf(buf, buflen, "%s", tmp);
             break;
         }
+    }
+}
+
+// Funcion principal del disassembler
+void disASM(TMV* mv) {
+    int i;
+    UByte ins = 0, typA = 0, typB = 0, typInsA = 0, typInsB = 0;
+    char op1Str[32], op2Str[32], mnemStr[16];
+
+    while (inCS(mv, mv->reg[IP])) {
+        fetchInstruction(mv);
+        fetchOperators(mv);
+
+        // --- Primer mitad: posicion de memoria y bytes en hexadecimal ---
+        // Memoria
+        printf("[%04X] ", decodeAddr(mv, mv->reg[IP]));
+
+        // Formacion del byte de instruccion
+        typA = (UByte)(mv->reg[OP1] >> 24);
+        typB = (UByte)(mv->reg[OP2] >> 24);
+        typInsA = typA << 6;
+        typInsB = typB << 6;
+        if (typB != 0)
+            typInsA >>= 2;
+        ins = (UByte) mv->reg[OPC] | typInsB | typInsA;
+
+        // Bytes de instruccion
+        printf("%02X ", ins);
+        disASMOP(mv, mv->reg[OP2], typB);
+        disASMOP(mv, mv->reg[OP1], typA);
+        for (i = 6 - typA - typB; i > 0; i--)
+            printf("   ");
+
+        // --- Segunda mitad: mnemonico y operandos alineados ---
+        snprintf(mnemStr, sizeof(mnemStr), "%s", opStr[mv->reg[OPC]]);
+        op1Str[0] = 0;
+        op2Str[0] = 0;
+        disASMOPStrToBuf(mv, mv->reg[OP1], typA, op1Str, sizeof(op1Str));
+        disASMOPStrToBuf(mv, mv->reg[OP2], typB, op2Str, sizeof(op2Str));
+
+        if (typB != 0) {
+            // OP1 alineado a la derecha, coma pegada, OP2 alineado a la derecha
+            printf("|  %-*s%*s,%*s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str, OP2_WIDTH, op2Str);
+        } else {
+            // Solo OP1 alineado a la derecha
+            printf("|  %-*s%*s\n", MNEM_WIDTH, mnemStr, OP1_WIDTH, op1Str);
+        }
+
+        mv->reg[IP] += 1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24);
     }
 }
 
@@ -1069,7 +987,7 @@ void initializeMainStack(TMV* mv) {
         valueToPush = mv->reg[PS] | (psSize - argvArraySize);
     }
     fpush(mv, &valueToPush, NULL);
-    
+
     // PUSH de argc
     valueToPush = mv->config.paramsArgc;
     fpush(mv, &valueToPush, NULL);
@@ -1258,12 +1176,12 @@ Long getOP(TMV* mv, Long operand) {
     UByte tipo, size, cantBytes, regIndex;
     Long res = 0, shift;
 
-    tipo = operand >> 24;               // Los 2 bits de tipo
-    size = (operand >> 22) & 0x03;      // Los 2 bits de tamano
+    tipo = operand >> 24;                    // Los 2 bits de tipo
 
     switch (tipo) {
         case 1: { // REGISTRO (extendido, sin prefijo, sufijo L, sufijo H)
-            regIndex = (operand >> 16) & 0x1F;       // Los 5 bits del registro
+            regIndex = operand & 0x0000001F;                    // Los 5 bits del registro
+            size = (operand >> 6) & 0x00000003;                 // Los 2 bits de tamano
 
             switch (size) {
                 case 0: // extendido (4 bytes)
@@ -1289,9 +1207,10 @@ Long getOP(TMV* mv, Long operand) {
             break;
         }
         case 3: { // MEMORIA (b, w, l)
+            size = (operand >> 22) & 0x00000003;                 // Los 2 bits de tamano
             cantBytes = 4 - size;
 
-            setLARFromOperand(mv, operand & 0x003FFFFF); // Pasamos el operando sin los bits de tamaño
+            setLARFromOperand(mv, operand & 0x001FFFFF); // Pasamos el operando sin los bits de tamaño
             setMAR(mv, cantBytes, mv->reg[LAR]);
             getMemory(mv); // getMemory ahora lee 'cantBytes' en MBR
             res = mv->reg[MBR];
@@ -1317,11 +1236,11 @@ void setOP(TMV* mv, Long operandA, Long operandB) {
     UByte tipo, size, regIndex, cantBytes;
 
     tipo = operandA >> 24;
-    size = (operandA >> 22) & 0x03;
 
     switch (tipo) {
         case 1: { // REGISTRO
-            regIndex = operandA & 0x1F;
+            regIndex = operandA & 0x0000001F;                    // Los 5 bits del registro
+            size = (operandA >> 6) & 0x00000003;                 // Los 2 bits de tamano
 
             switch (size) {
                 case 0: // Extendido: se reemplaza todo el registro
@@ -1340,6 +1259,7 @@ void setOP(TMV* mv, Long operandA, Long operandB) {
             break;
         }
         case 3: { // MEMORIA
+            size = (operandA >> 22) & 0x00000003;                // Los 2 bits de tamano
             cantBytes = 4 - size;
 
             setLARFromOperand(mv, operandA & 0x003FFFFF);
@@ -1529,7 +1449,7 @@ void fsysStrRead(TMV* mv) {
         setMemory(mv);
         i++;
     }
-    
+
     // Escribimos el terminador nulo '\0' al final
     setLARFromAddress(mv, mv->reg[EDX] + i);
     setMAR(mv, 1, mv->reg[LAR]);
@@ -1548,7 +1468,7 @@ void fsysStrWrite(TMV* mv) {
         setLARFromAddress(mv, currentAddr);
         setMAR(mv, 1, mv->reg[LAR]);
         getMemory(mv);
-        
+
         car = (char) mv->reg[MBR];
         if (car != '\0') {
             printf("%c", car);
@@ -1652,7 +1572,7 @@ void fpop(TMV* mv, Long* value1, Long* value2) {
 
 void fcall(TMV* mv, Long* value1, Long* value2) {
     Long returnAddr;
-    
+
     returnAddr = mv->reg[IP];
     fpush(mv, &returnAddr, NULL);
     mv->reg[IP] &= MASK_LDH;
