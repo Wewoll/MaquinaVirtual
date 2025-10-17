@@ -252,6 +252,7 @@ ULong sumSegSizes(SegmentSizes* segSizes);
 void createParamSegment(TMV* mv, UWord psSize);
 void initializeTable(TMV* mv, SegmentSizes* segSizes);
 void initializeRegisters(TMV* mv, SegmentSizes* segSizes);
+void initIP(TMV* mv);
 
 // Prototipos del disassambler
 void disASM(TMV* mv);
@@ -478,10 +479,7 @@ int main(int argc, char *argv[]) {
                 // Disassambler
                 if (mv.config.disassemblerFlag) {
                     disASM(&mv);
-                    if (mv.config.vmxPath != NULL)
-                        initializeRegisters(&mv, &segSizes);
-                    else if (mv.config.vmiPath != NULL)
-                        readImage(&mv);
+                    initIP(&mv);
                 }
 
                 // Ejecucion del programa
@@ -832,12 +830,19 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes) {
     }
 
     // Finalmente, inicializamos los punteros de ejecución (IP y SP).
-    mv->reg[IP] = mv->reg[CS] | mv->offsetEP;
+    initIP(mv);
 
     if (mv->reg[SS] != NIL)
         mv->reg[SP] = mv->reg[SS] + mv->seg[mv->reg[SS] >> 16].size;
     else
         mv->reg[SP] = NIL; // Si no hay pila, SP también es inválido
+}
+
+/**
+ * @brief Inicializa IP usando el segmento CS y el offset del Entry Point.
+ */
+void initIP(TMV* mv) {
+    mv->reg[IP] = mv->reg[CS] | mv->offsetEP;
 }
 
 /// --- DISASSAMBLER ---
