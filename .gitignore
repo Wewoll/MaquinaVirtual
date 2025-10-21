@@ -1,5 +1,7 @@
 bin/
 obj/
+test/
+.vscode/
 *.depend
 *.layout
 *.cbp
