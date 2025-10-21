@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include <stdlib.h>                 // Necesario para el uso de memoria
+#include <stdlib.h>                 // Necesario para el uso de memoria y sys 7
 #include <stdint.h>                 // Necesario para definicion de tamanos
 #include <string.h>                 // Necesario para manejo de strings
 #include <stddef.h>                 // Necesario para el uso del macro offsetof, el mapeo de los segmentos
@@ -485,13 +485,15 @@ int main(int argc, char *argv[]) {
                 // Ejecucion del programa
                 executeProgram(&mv);
             }
+
+            // Liberamos la memoria
+            if (mv.mem != NULL) {
+                free(mv.mem);
+            }
         }
     }
 
-    // Liberamos la memoria
-    if (mv.mem != NULL) {
-        free(mv.mem);
-    }
+
 
     return mv.errorFlag;
 }
@@ -859,17 +861,14 @@ void disASM(TMV* mv) {
  * @brief Desensambla y muestra el contenido del Const Segment como cadenas de caracteres.
  */
 void disASMConst(TMV* mv) {
-Long ksBase, currentAddr, len, maxHexBytes, i;
-    UWord offset;
+    Long currentAddr, len, maxHexBytes, i;
     UByte car;
     char stringFull[256]; // Buffer para la string completa
 
     if (decodeSeg(mv, KS) != NIL) {
-        ksBase = mv->seg[decodeSeg(mv, KS)].base;
-        offset = ksBase;
+        currentAddr = mv->seg[decodeSeg(mv, KS)].base;
 
-        while (offset < mv->seg[decodeSeg(mv, KS)].size) {
-            currentAddr = ksBase + offset;
+        while (currentAddr < mv->seg[decodeSeg(mv, KS)].size) {
             len = 0;
 
             // Imprimir la dirección de memoria
@@ -906,8 +905,8 @@ Long ksBase, currentAddr, len, maxHexBytes, i;
             // Imprimir la cadena de caracteres
             printf("| \"%s\"\n", stringFull);
 
-            // Mover el offset a la siguiente cadena
-            offset += len + 1;
+            // Mover el addr a la siguiente cadena
+            currentAddr += len + 1;
         }
     }
 }
@@ -981,7 +980,7 @@ void disASMOP(TMV* mv, Long operand, Byte type) {
  * Maneja los pseudónimos de registro (AX, AL, AH) y los modificadores de memoria (b[], w[]).
  */
 void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t buflen) {
-    UByte size;
+    UByte size, hex;
     Word offset;
     char car;
 
@@ -992,20 +991,20 @@ void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t bufle
             break;
         case 1: {       // REGISTRO
             size = (operand >> 6) & MASK_SIZE;
-            car = regStr[operand][1];
+            hex = operand & 0x0000000F;
 
             switch (size) {
                 case 0: // 4 bytes
                     snprintf(buf, buflen, "%s", regStr[operand]);
                     break;
                 case 1: // Cuarto byte
-                    snprintf(buf, buflen, "%cL", car);
+                    snprintf(buf, buflen, "%XL", hex);
                     break;
                 case 2: // Tercer byte
-                    snprintf(buf, buflen, "%cH", car);
+                    snprintf(buf, buflen, "%XH", hex);
                     break;
                 case 3: // 2 bytes
-                    snprintf(buf, buflen, "%cX", car);
+                    snprintf(buf, buflen, "%XX", hex);
                     break;
             }
             break;
@@ -1032,7 +1031,7 @@ void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t bufle
             }
 
             offset = (Word) (operand & 0xFFFF);
-            snprintf(buf, buflen, "%c[%s%s%d]", car, regStr[operand >> 16], (offset >= 0 ? "+" : ""), offset);
+            snprintf(buf, buflen, "%c[%s%s%d]", car, regStr[(operand >> 16) & 0x1F], (offset >= 0 ? "+" : ""), offset);
             break;
         }
     }
@@ -1373,7 +1372,7 @@ void setOP(TMV* mv, Long operandA, Long operandB) {
             size = (operandA >> 22) & MASK_SIZE;                 // Los 2 bits de tamano
             cantBytes = 4 - size;
 
-            setLARFromOperand(mv, operandA & 0x003FFFFF);
+            setLARFromOperand(mv, operandA & 0x001FFFFF);
             setMAR(mv, cantBytes, mv->reg[LAR]);
             mv->reg[MBR] = operandB; // setMemory truncará el valor a 'cantBytes'
             setMemory(mv);
@@ -1457,6 +1456,8 @@ void fsysRead(TMV* mv) {
 
         i++;
     }
+
+    while ((car = getchar()) != '\n' && car != EOF);
 }
 
 // Recibe un número decimal y devulve su representación binaria en complemento a 2 en formato String
@@ -1566,6 +1567,8 @@ void fsysStrRead(TMV* mv) {
     setMAR(mv, 1, mv->reg[LAR]);
     mv->reg[MBR] = '\0';
     setMemory(mv);
+
+    while ((car = getchar()) != '\n' && car != EOF);
 }
 
 void fsysStrWrite(TMV* mv) {
@@ -1589,13 +1592,16 @@ void fsysStrWrite(TMV* mv) {
 }
 
 /**
- * @brief Limpia la pantalla de la consola (SYS 0x07).
+ * @brief Limpia la pantalla de la consola (SYS 0x07) llamando a un comando del sistema.
  */
 void fsysClrScr(TMV* mv) {
-    // La secuencia "\033[2J" borra toda la pantalla.
-    // La secuencia "\033[H" mueve el cursor a la posición inicial (fila 1, columna 1).
-    printf("\033[2J\033[H");
-    fflush(stdout); // Asegura que la limpieza se muestre inmediatamente.
+    // The #ifdef _WIN32 directive checks if the code is being compiled on Windows.
+    #ifdef _WIN32
+        system("cls");
+    // #else runs for any other operating system (like Linux or macOS).
+    #else
+        system("clear");
+    #endif
 }
 
 /**
