@@ -648,6 +648,7 @@ void readImage(TMV* mv) {
         }
 
         fclose(arch);
+        mv->offsetEP = (UWord) mv->reg[IP];
     }
 }
 
@@ -1568,7 +1569,9 @@ void fsysStrRead(TMV* mv) {
     mv->reg[MBR] = '\0';
     setMemory(mv);
 
-    while ((car = getchar()) != '\n' && car != EOF);
+    if (car != '\n' && car != EOF) {
+        while ((car = getchar()) != '\n' && car != EOF);
+    }
 }
 
 void fsysStrWrite(TMV* mv) {
