@@ -120,8 +120,8 @@ static const char* errorMsgs[] = {
     "Error: No se pudo abrir el archivo.\n",                                                // 2
     "Error: Fuera de los limites del segmento.\n",                                          // 3 - pedido en el pdf v1
     "Error: Intruccion invalida.\n",                                                        // 4 - pedido en el pdf v1
-    "Error: No se puede dividir por 0.\n"                                                   // 5 - pedido en el pdf v1
-    "Error: Memoria insuficiente.\n"                                                        // 6 - pedido en el pdf v2
+    "Error: No se puede dividir por 0.\n",                                                  // 5 - pedido en el pdf v1
+    "Error: Memoria insuficiente.\n",                                                       // 6 - pedido en el pdf v2
     "Error: Stack Overflow.\n",                                                             // 7 - pedido en el pdf v2
     "Error: Stack Underflow.\n"                                                             // 8 - pedido en el pdf v2
 };
