@@ -1,50 +1,77 @@
-#include <stdio.h>
-#include <stdlib.h>                 // Necesario para el uso de memoria y sys 7
-#include <stdint.h>                 // Necesario para definicion de tamanos
-#include <string.h>                 // Necesario para manejo de strings
-#include <stddef.h>                 // Necesario para el uso del macro offsetof, el mapeo de los segmentos
-#include <time.h>                   // Necesario para funcion random
+/*******************************************************************************
+#  main.c
+#  Máquina Virtual - Implementación de la VM usada en el trabajo práctico
+#
+#  Descripción:
+#    Implementación en C de una máquina virtual educativa. Contiene:
+#      - Definiciones de memoria y registros
+#      - Parsers para archivos .vmx/.vmi
+#      - Ciclo de fetch-decode-execute de instrucciones
+#      - Manejadores de sistema (SYS) y utilidades de I/O
+#
+#  Autores:
+#    - Paniagua, Lucas
+#    - Cherepakhin, Victoria
+#    - Zuviria, Nicolas
+#
+#  Nota:
+#    Los comentarios y la documentación dentro de este archivo están en
+#    español y siguen un estilo Doxygen/consistente para facilitar la lectura
+#    y la generación de documentación futura.
+*******************************************************************************/
 
-// "NULL"
+#include <stdio.h>
+#include <stdlib.h>   /* Necesario para malloc/free y system (syscalls de consola) */
+#include <stdint.h>   /* Tipos con tamaños explícitos (int8_t, uint32_t, ...) */
+#include <string.h>   /* Manejo de cadenas */
+#include <stddef.h>   /* offsetof() usado para layout de segmentos */
+#include <time.h>     /* srand/rand para la instrucción RND */
+
+/* ------------------------------------------------------------------------- */
+/* Constantes y configuraciones globales (definiciones de la VM)             */
+/* ------------------------------------------------------------------------- */
+
+/* Valor sentinel para punteros lógicos inválidos (equivalente a NULL lógico) */
 #define NIL -1
 
-// Tamanos de la MV
-#define RAM_KIB         16                   // Maximo de RAM en KiB
-#define RAM_MAX         (RAM_KIB * 1024)     // Maximo de RAM en Bytes
-#define REG_AMOUNT      32                   // 32 Registros
-#define SEG_AMOUNT      8                    // 8 Descriptores de segmentos (son 8 en el debugger)
-#define SEG_MAXSIZE     65535                // 2^16 tamano maximo de segmento
+/* Tamaños de la máquina virtual (valores por defecto) */
+#define RAM_KIB     16                  /* Máximo de RAM en KiB */
+#define RAM_MAX     (RAM_KIB * 1024)    /* Máximo de RAM en bytes */
+#define REG_AMOUNT  32                  /* Cantidad de registros (32) */
+#define SEG_AMOUNT  8                   /* Cantidad de entradas en la tabla de segmentos */
+#define SEG_MAXSIZE 65535               /* Tamaño máximo por segmento (2^16 - 1) */
 
-// Cantidad de segmentos en base al mapa del layout de la memoria (6)
-#define NUM_SEGMENTS     (sizeof(segmentLayoutMap) / sizeof(SegmentLayout))
+/* Número de segmentos válidos (derivado del mapa de layout) */
+#define NUM_SEGMENTS        (sizeof(segmentLayoutMap) / sizeof(SegmentLayout))
+#define DEFAULT_SEG_SIZE    1024        // 1 KiB
 
-// Constantes para el parseo de la línea de comandos
-#define ARG_VMX ".vmx"
-#define ARG_VMI ".vmi"
-#define ARG_MEM "m="
-#define ARG_DISASM "-d"
-#define ARG_PARAMS "-p"
+/* Constantes para el parseo de la línea de comandos */
+#define ARG_VMX     ".vmx"
+#define ARG_VMI     ".vmi"
+#define ARG_MEM     "m="
+#define ARG_DISASM  "-d"
+#define ARG_PARAMS  "-p"
 
-// Cantidades de bytes de header del .vmx
-#define HEADER_P_RANGE      18
-#define HEADER_P_COMUN      8
-#define HEADER_P_V2         10
-#define HEADER_I            8
+/* Tamaños de cabeceras/headers en bytes para archivos .vmx/.vmi */
+#define HEADER_P_RANGE 18
+#define HEADER_P_COMUN 8
+#define HEADER_P_V2    10
+#define HEADER_I       8
 
-// Constantes para el Disassambler
-#define MNEM_WIDTH  4
-#define OP_WIDTH    11
+/* Formato de presentación para el disassembler */
+#define MNEM_WIDTH 4
+#define OP_WIDTH   12
 
-// Constantes para extraer los OP
-#define MASKB_OPC       0b00011111
-#define MASKB_OP1       0b00110000
-#define MASKB_OP2       0b11000000
+/* Máscaras para decodificación de operandos (bits dentro del byte de instrucción) */
+#define MASKB_OPC 0b00011111
+#define MASKB_OP1 0b00110000
+#define MASKB_OP2 0b11000000
 
-// Mascaras para CC
+/* Flags del registro CC */
 #define CC_N 0x80000000
 #define CC_Z 0x40000000
 
-// Mascaras varias
+/* Máscaras auxiliares usadas en manipulación de operandos y direcciones */
 #define MASK_SEG    0xFFFF0000
 #define MASK_UNTYPE 0x00FFFFFF
 #define MASK_SIZE   0x00000003
@@ -55,7 +82,7 @@
 #define MASK_LDH    0xFFFF0000
 #define MASK_SETMEM 0xFF
 
-// Tamanos usados dentro del codigo
+/* Tamanos usados dentro del codigo */
 typedef int8_t Byte;
 typedef uint8_t UByte;
 typedef int16_t Word;
@@ -63,35 +90,35 @@ typedef uint16_t UWord;
 typedef int32_t Long;
 typedef uint32_t ULong;
 
-// Tabla de descriptores de segmentos
+/* Tabla de descriptores de segmentos */
 typedef struct {
-    UWord base;   // dirección lógica de inicio
-    UWord size;   // tamaño del segmento en bytes
+    UWord base;   /* dirección lógica de inicio */
+    UWord size;   /* tamaño del segmento en bytes */
 } TableSeg;
 
-// Estructura para almacenar los parámetros de la línea de comandos
+/* Estructura para almacenar los parámetros de la línea de comandos */
 typedef struct {
     char*       vmxPath;
     char*       vmiPath;
     ULong       memoryKiB;
     Byte        disassemblerFlag;
-    Long        paramsArgc;          // Cantidad de parámetros para el programa
-    char**      paramsArgv;          // Puntero a los parámetros en el argv original
+    Long        paramsArgc;          /* Cantidad de parámetros para el programa */
+    char**      paramsArgv;          /* Puntero a los parámetros en el argv original */
 } MVConfig;
 
-// Maquina Virtual
+/* Maquina Virtual */
 typedef struct {
-    UByte*     mem;                 // Memoria dinamica
-    ULong      totalMemorySize;     // Tamaño total de la memoria en bytes
-    Long       reg[REG_AMOUNT];     // 32 registros de 4 bytes
-    TableSeg   seg[SEG_AMOUNT];     // Tabla de segmentos
-    UWord      offsetEP;            // Offset del Entry Point
-    MVConfig   config;              // Configuracion de la MV
-    UByte      errorFlag;           // Error flag
-    UByte      breakFlag;           // Breakpoint flag
+    UByte*     mem;                 /* Memoria dinamica */
+    ULong      totalMemorySize;     /* Tamaño total de la memoria en bytes */
+    Long       reg[REG_AMOUNT];     /* 32 registros de 4 bytes */
+    TableSeg   seg[SEG_AMOUNT];     /* Tabla de segmentos */
+    UWord      offsetEP;            /* Offset del Entry Point */
+    MVConfig   config;              /* Configuracion de la MV */
+    UByte      errorFlag;           /* Error flag */
+    UByte      breakFlag;           /* Breakpoint flag */
 } TMV;
 
-// Almacena los tamaños de los segmentos leídos del header del .vmx
+/* Almacena los tamaños de los segmentos leídos del header del .vmx */
 typedef struct {
     UWord codeSegSize;
     UWord dataSegSize;
@@ -101,7 +128,7 @@ typedef struct {
     UWord paramSegSize;
 } SegmentSizes;
 
-// Enumeracion de errores
+/* Enumeracion de errores */
 typedef enum {
     ERR_EXE = 1,
     ERR_FOPEN,
@@ -113,20 +140,20 @@ typedef enum {
     ERR_SUF
 } ErrNumber;
 
-// Vector de mensajes de errores
+/* Vector de mensajes de errores */
 static const char* errorMsgs[] = {
-    NULL,                                                                                   // indice 0 (sin error)
-    "Uso: vmx [filename.vmx] [filename.vmi] [m=M] [-d] [-p param1 param2 ... paramN]\n",    // 1
-    "Error: No se pudo abrir el archivo.\n",                                                // 2
-    "Error: Fuera de los limites del segmento.\n",                                          // 3 - pedido en el pdf v1
-    "Error: Intruccion invalida.\n",                                                        // 4 - pedido en el pdf v1
-    "Error: No se puede dividir por 0.\n",                                                  // 5 - pedido en el pdf v1
-    "Error: Memoria insuficiente.\n",                                                       // 6 - pedido en el pdf v2
-    "Error: Stack Overflow.\n",                                                             // 7 - pedido en el pdf v2
-    "Error: Stack Underflow.\n"                                                             // 8 - pedido en el pdf v2
+    NULL,                                                                                   /* indice 0 (sin error) */
+    "Uso: vmx [filename.vmx] [filename.vmi] [m=M] [-d] [-p param1 param2 ... paramN]\n",    /* 1 */
+    "Error: No se pudo abrir el archivo.\n",                                                /* 2 */
+    "Error: Fuera de los limites del segmento.\n",                                          /* 3 - pedido en el pdf v1 */
+    "Error: Intruccion invalida.\n",                                                        /* 4 - pedido en el pdf v1 */
+    "Error: No se puede dividir por 0.\n",                                                  /* 5 - pedido en el pdf v1 */
+    "Error: Memoria insuficiente.\n",                                                       /* 6 - pedido en el pdf v2 */
+    "Error: Stack Overflow.\n",                                                             /* 7 - pedido en el pdf v2 */
+    "Error: Stack Underflow.\n"                                                             /* 8 - pedido en el pdf v2 */
 };
 
-// Enumeracion de registros
+/* Enumeracion de registros */
 typedef enum {
     LAR = 0, MAR, MBR,
     IP = 3, OPC, OP1, OP2,
@@ -137,50 +164,50 @@ typedef enum {
     CS = 26, DS, ES, SS, KS, PS
 } RegName;
 
-// Vector de nombres de registros
+/* Vector de nombres de registros */
 static const char* regStr[32] = {
-    "LAR",      // 0
-    "MAR",      // 1
-    "MBR",      // 2
-    "IP",       // 3
-    "OPC",      // 4
-    "OP1",      // 5
-    "OP2",      // 6
-    "SP",       // 7
-    "BP",       // 8
-    "RESERVED", // 9
-    "EAX",      // 10
-    "EBX",      // 11
-    "ECX",      // 12
-    "EDX",      // 13
-    "EEX",      // 14
-    "EFX",      // 15
-    "AC",       // 16
-    "CC",       // 17
-    "RESERVED", // 18
-    "RESERVED", // 19
-    "RESERVED", // 20
-    "RESERVED", // 21
-    "RESERVED", // 22
-    "RESERVED", // 23
-    "RESERVED", // 24
-    "RESERVED", // 25
-    "CS",       // 26
-    "DS",       // 27
-    "ES",       // 28
-    "SS",       // 29
-    "KS",       // 30
-    "PS"        // 31
+    "LAR",      /* 0 */
+    "MAR",      /* 1 */
+    "MBR",      /* 2 */
+    "IP",       /* 3 */
+    "OPC",      /* 4 */
+    "OP1",      /* 5 */
+    "OP2",      /* 6 */
+    "SP",       /* 7 */
+    "BP",       /* 8 */
+    "RESERVED", /* 9 */
+    "EAX",      /* 10 */
+    "EBX",      /* 11 */
+    "ECX",      /* 12 */
+    "EDX",      /* 13 */
+    "EEX",      /* 14 */
+    "EFX",      /* 15 */
+    "AC",       /* 16 */
+    "CC",       /* 17 */
+    "RESERVED", /* 18 */
+    "RESERVED", /* 19 */
+    "RESERVED", /* 20 */
+    "RESERVED", /* 21 */
+    "RESERVED", /* 22 */
+    "RESERVED", /* 23 */
+    "RESERVED", /* 24 */
+    "RESERVED", /* 25 */
+    "CS",       /* 26 */
+    "DS",       /* 27 */
+    "ES",       /* 28 */
+    "SS",       /* 29 */
+    "KS",       /* 30 */
+    "PS"        /* 31 */
 };
 
-// Estructura que describe la metadata de un segmento
+/* Estructura que describe la metadata de un segmento */
 typedef struct {
-    Long    reg;          // El enum del registro de segmento (ej: PS, KS, CS)
-    ULong   size_offset;  // El offset del campo de tamaño dentro de la struct SegmentSizes
+    Long    reg;          /* El enum del registro de segmento (ej: PS, KS, CS) */
+    ULong   size_offset;  /* El offset del campo de tamaño dentro de la struct SegmentSizes */
 } SegmentLayout;
 
-// El "mapa" que es la ÚNICA FUENTE DE LA VERDAD para el layout de la memoria.
-// Define el orden físico y cómo encontrar el tamaño y el registro de cada segmento.
+/* El "mapa" que es la ÚNICA FUENTE DE LA VERDAD para el layout de la memoria.
+    Define el orden físico y cómo encontrar el tamaño y el registro de cada segmento. */
 static const SegmentLayout segmentLayoutMap[] = {
     { PS, offsetof(SegmentSizes, paramSegSize)  },
     { KS, offsetof(SegmentSizes, constSegSize)  },
@@ -190,7 +217,7 @@ static const SegmentLayout segmentLayoutMap[] = {
     { SS, offsetof(SegmentSizes, stackSegSize)  }
 };
 
-// Enumeracion de instrucciones
+/* Enumeracion de instrucciones */
 typedef enum {
     SYS = 0x00, JMP, JZ, JP, JN, JNZ, JNP, JNN, NOT,
     PUSH = 0x0B, POP, CALL,
@@ -198,44 +225,45 @@ typedef enum {
     MOV = 0x10, ADD, SUB, MUL, DIV, CMP, SHL, SHR, SAR, AND, OR, XOR, SWAP, LDL, LDH, RND
 } OpCode;
 
-// Vector de mnemonicos de instrucciones
+/* Vector de mnemonicos de instrucciones */
 static const char* opStr[32] = {
-    "SYS",      // 0x00
-    "JMP",      // 0x01
-    "JZ",       // 0x02
-    "JP",       // 0x03
-    "JN",       // 0x04
-    "JNZ",      // 0x05
-    "JNP",      // 0x06
-    "JNN",      // 0x07
-    "NOT",      // 0x08
-    "INVALID",  // 0x09
-    "INVALID",  // 0x0A
-    "PUSH",     // 0x0B
-    "POP",      // 0x0C
-    "CALL",     // 0x0D
-    "RET",      // 0x0E
-    "STOP",     // 0x0F
-    "MOV",      // 0x10
-    "ADD",      // 0x11
-    "SUB",      // 0x12
-    "MUL",      // 0x13
-    "DIV",      // 0x14
-    "CMP",      // 0x15
-    "SHL",      // 0x16
-    "SHR",      // 0x17
-    "SAR",      // 0x18
-    "AND",      // 0x19
-    "OR",       // 0x1A
-    "XOR",      // 0x1B
-    "SWAP",     // 0x1C
-    "LDL",      // 0x1D
-    "LDH",      // 0x1E
-    "RND"       // 0x1F
+    "SYS",      /* 0x00 */
+    "JMP",      /* 0x01 */
+    "JZ",       /* 0x02 */
+    "JP",       /* 0x03 */
+    "JN",       /* 0x04 */
+    "JNZ",      /* 0x05 */
+    "JNP",      /* 0x06 */
+    "JNN",      /* 0x07 */
+    "NOT",      /* 0x08 */
+    "INVALID",  /* 0x09 */
+    "INVALID",  /* 0x0A */
+    "PUSH",     /* 0x0B */
+    "POP",      /* 0x0C */
+    "CALL",     /* 0x0D */
+    "RET",      /* 0x0E */
+    "STOP",     /* 0x0F */
+    "MOV",      /* 0x10 */
+    "ADD",      /* 0x11 */
+    "SUB",      /* 0x12 */
+    "MUL",      /* 0x13 */
+    "DIV",      /* 0x14 */
+    "CMP",      /* 0x15 */
+    "SHL",      /* 0x16 */
+    "SHR",      /* 0x17 */
+    "SAR",      /* 0x18 */
+    "AND",      /* 0x19 */
+    "OR",       /* 0x1A */
+    "XOR",      /* 0x1B */
+    "SWAP",     /* 0x1C */
+    "LDL",      /* 0x1D */
+    "LDH",      /* 0x1E */
+    "RND"       /* 0x1F */
 };
 
-/// --- PROTOTIPOS ---
-// Prototipos de inicio
+/* --- PROTOTIPOS (declaraciones de funciones) --- */
+
+/** Inicialiazacion: configuración, carga del programa, manejo de imágenes y inicio de la MV */
 void errorHandler(TMV* mv, int err);
 void parseCommandLine(int argc, char* argv[], TMV* mv);
 void mallocMemory(TMV* mv);
@@ -254,43 +282,43 @@ void initializeTable(TMV* mv, SegmentSizes* segSizes);
 void initializeRegisters(TMV* mv, SegmentSizes* segSizes);
 void initIP(TMV* mv);
 
-// Prototipos del disassambler
+/** Disassembler: convertir memoria a texto legible */
 void disASM(TMV* mv);
 void disASMConst(TMV* mv);
 void disASMCode(TMV* mv);
 void disASMOP(TMV* mv, Long operand, Byte type);
 void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t buflen);
 
-// Ejecucion del programa
+/** Ejecutador: ciclo principal y ejecución de instrucciones */
 void executeProgram(TMV* mv);
 void executeOneInstruction(TMV* mv);
 void initializeMainStack(TMV* mv);
 
-// Prototipos de decodificadores
+/** Decodificadores y utilidades de direccionamiento */
 Long decodeSeg(TMV* mv, Long cod);
 Long decodeAddr(TMV* mv, Long logical);
 int inSegment(TMV* mv, Long logical);
 int inCS(TMV* mv, Long logical);
 
-// Prototipos de inicio de instruccion
+/** Fetch/decodificación de instrucción */
 void fetchInstruction(TMV* mv);
 void fetchOperators(TMV* mv);
 Long fetchOperand(TMV* mv, int bytes, int* offset);
 void addIP(TMV* mv);
 
-// Prototipos de memoria
+/** Memoria: helpers relacionados con LAR/MAR/MBR */
 void setLARFromOperand(TMV* mv, Long operand);
 void setLARFromAddress(TMV* mv, Long logicalAddress);
 void setMAR(TMV* mv, Long cantBytes, Long logical);
 void getMemory(TMV* mv);
 void setMemory(TMV* mv);
 
-// Prototipos centrados a operadores
+/** Operandos: lectura y escritura (get/set) */
 Long getOP(TMV* mv, Long operand);
 void setOP(TMV* mv, Long operandA, Long operandB);
 void setCC(TMV* mv, Long valor);
 
-// Prototipos de SYS
+/** SYS: llamadas al sistema/servicios */
 void fsys(TMV* mv, Long* value1, Long* value2);
 void fsysRead(TMV* mv);
 void decToBinC2(Long value, char *binStr);
@@ -300,12 +328,12 @@ void fsysStrWrite(TMV* mv);
 void fsysClrScr(TMV* mv);
 void fsysBreakpoint(TMV* mv);
 
-// Prototipos de saltos
+/** Saltos / condiciones */
 void fmsl(TMV* mv, Long* value1, Long* value2);
 Long fjz(TMV* mv);
 Long fjn(TMV* mv);
 
-// Prototipos del resto de las operaciones
+/** Instrucciones (ALU / control / pila / etc.) */
 void fnot(TMV* mv, Long* value1, Long* value2);
 void fpush(TMV* mv, Long* value1, Long* value2);
 void fpop(TMV* mv, Long* value1, Long* value2);
@@ -328,59 +356,80 @@ void fldl(TMV* mv, Long* value1, Long* value2);
 void fldh(TMV* mv, Long* value1, Long* value2);
 void frnd(TMV* mv, Long* value1, Long* value2);
 
-// Puntero a funciones de instruccion
+/* Puntero a función que implementa una instrucción.
+ * Firma: (TMV* mv, Long* value1, Long* value2)
+ * - mv: contexto de la máquina
+ * - value1/value2: punteros a los operandos ya cargados por fetch (pueden ser NULL)
+ */
 typedef void (*InstrFunc)(TMV*, Long*, Long*);
 
+/* Descripción de la entrada de la tabla de instrucciones.
+ * - fetchValue: cuántos operandos deben ser leídos antes de ejecutar (0, 1 o 2).
+ * - execute: puntero a la rutina que realiza la semántica de la instrucción.
+ * - setearCC: si es 1, se invoca setCC(mv, value1) tras la ejecución.
+ * - setValue: cuántos operandos deben escribirse de vuelta (0, 1 o 2).
+ */
 typedef struct {
-    UByte       fetchValue;     // Opcional: getOperand
-    InstrFunc   execute;        // La función principal
-    UByte       setearCC;       // Opcional: setCC
-    UByte       setValue;       // Opcional: setOperand
+    UByte       fetchValue;     /* 0..2: número de operandos a obtener */
+    InstrFunc   execute;        /* implementación de la instrucción */
+    UByte       setearCC;       /* 0/1: actualizar flags CC con value1 */
+    UByte       setValue;       /* 0..2: número de operandos a escribir */
 } Instruction;
 
-// Wrapper para error "Intruccion invalida"
+/* Wrapper simple para instrucción inválida: marca el error correspondiente. */
 void finvalid(TMV* mv, Long* value1, Long* value2)  { errorHandler(mv, ERR_INS); }
 
+/* Tabla que describe el comportamiento de cada opcode (0x00..0x1F).
+ * Índices corresponden con la enumeración OpCode.
+ * Para cada opcode definimos:
+ *  - cuántos operandos traer (fetchValue)
+ *  - qué función ejecuta (execute)
+ *  - si actualiza condiciones (setearCC)
+ *  - cuántos operandos escribe de vuelta (setValue)
+ */
 static const Instruction instrTable[32] = {
-    [SYS] =  { .fetchValue = 1, .execute = fsys, .setearCC = 0, .setValue = 0 },     // 0x00
-    [JMP] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x01
-    [JZ] =   { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x02
-    [JP] =   { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x03
-    [JN] =   { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x04
-    [JNZ] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x05
-    [JNP] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x06
-    [JNN] =  { .fetchValue = 1, .execute = fmsl, .setearCC = 0, .setValue = 0 },     // 0x07
-    [NOT] =  { .fetchValue = 1, .execute = fnot, .setearCC = 1, .setValue = 1 },     // 0x08
+    [SYS] =  { .fetchValue = 1, .execute = fsys,   .setearCC = 0, .setValue = 0 },  /* 0x00 SYS */
+    [JMP] =  { .fetchValue = 1, .execute = fmsl,   .setearCC = 0, .setValue = 0 },  /* 0x01 JMP */
+    [JZ] =   { .fetchValue = 1, .execute = fmsl,   .setearCC = 0, .setValue = 0 },  /* 0x02 JZ  */
+    [JP] =   { .fetchValue = 1, .execute = fmsl,   .setearCC = 0, .setValue = 0 },  /* 0x03 JP  */
+    [JN] =   { .fetchValue = 1, .execute = fmsl,   .setearCC = 0, .setValue = 0 },  /* 0x04 JN  */
+    [JNZ] =  { .fetchValue = 1, .execute = fmsl,   .setearCC = 0, .setValue = 0 },  /* 0x05 JNZ */
+    [JNP] =  { .fetchValue = 1, .execute = fmsl,   .setearCC = 0, .setValue = 0 },  /* 0x06 JNP */
+    [JNN] =  { .fetchValue = 1, .execute = fmsl,   .setearCC = 0, .setValue = 0 },  /* 0x07 JNN */
+    [NOT] =  { .fetchValue = 1, .execute = fnot,   .setearCC = 1, .setValue = 1 },  /* 0x08 NOT */
 
-    [9]   =  { .fetchValue = 0, .execute = finvalid, .setearCC = 0, .setValue = 0 }, // 0x09
-    [10]  =  { .fetchValue = 0, .execute = finvalid, .setearCC = 0, .setValue = 0 }, // 0x0A
+    [9]   =  { .fetchValue = 0, .execute = finvalid,.setearCC = 0, .setValue = 0 }, /* 0x09 invalid */
+    [10]  =  { .fetchValue = 0, .execute = finvalid,.setearCC = 0, .setValue = 0 }, /* 0x0A invalid */
 
-    [PUSH] = { .fetchValue = 1, .execute = fpush, .setearCC = 0, .setValue = 0 },    // 0x0B
-    [POP] =  { .fetchValue = 1, .execute = fpop, .setearCC = 0, .setValue = 1 },     // 0x0C
-    [CALL] = { .fetchValue = 1, .execute = fcall, .setearCC = 0, .setValue = 0 },    // 0x0D
+    [PUSH] = { .fetchValue = 1, .execute = fpush,  .setearCC = 0, .setValue = 0 },  /* 0x0B PUSH */
+    [POP] =  { .fetchValue = 1, .execute = fpop,   .setearCC = 0, .setValue = 1 },  /* 0x0C POP  */
+    [CALL] = { .fetchValue = 1, .execute = fcall,  .setearCC = 0, .setValue = 0 },  /* 0x0D CALL */
 
-    [RET] =  { .fetchValue = 0, .execute = fret, .setearCC = 0, .setValue = 0 },     // 0x0E
-    [STOP] = { .fetchValue = 0, .execute = fstop, .setearCC = 0, .setValue = 0 },    // 0x0F
+    [RET] =  { .fetchValue = 0, .execute = fret,   .setearCC = 0, .setValue = 0 },  /* 0x0E RET  */
+    [STOP] = { .fetchValue = 0, .execute = fstop,  .setearCC = 0, .setValue = 0 },  /* 0x0F STOP */
 
-    [MOV] =  { .fetchValue = 2, .execute = fmov, .setearCC = 0, .setValue = 1 },     // 0x10
-    [ADD] =  { .fetchValue = 2, .execute = fadd, .setearCC = 1, .setValue = 1 },     // 0x11
-    [SUB] =  { .fetchValue = 2, .execute = fsub, .setearCC = 1, .setValue = 1 },     // 0x12
-    [MUL] =  { .fetchValue = 2, .execute = fmul, .setearCC = 1, .setValue = 1 },     // 0x13
-    [DIV] =  { .fetchValue = 2, .execute = fdiv, .setearCC = 1, .setValue = 1 },     // 0x14
-    [CMP] =  { .fetchValue = 2, .execute = fsub, .setearCC = 1, .setValue = 0 },     // 0x15
-    [SHL] =  { .fetchValue = 2, .execute = fshl, .setearCC = 1, .setValue = 1 },     // 0x16
-    [SHR] =  { .fetchValue = 2, .execute = fshr, .setearCC = 1, .setValue = 1 },     // 0x17
-    [SAR] =  { .fetchValue = 2, .execute = fsar, .setearCC = 1, .setValue = 1 },     // 0x18
-    [AND] =  { .fetchValue = 2, .execute = fand, .setearCC = 1, .setValue = 1 },     // 0x19
-    [OR] =   { .fetchValue = 2, .execute = f_or, .setearCC = 1, .setValue = 1 },     // 0x1A
-    [XOR] =  { .fetchValue = 2, .execute = fxor, .setearCC = 1, .setValue = 1 },     // 0x1B
-    [SWAP] = { .fetchValue = 2, .execute = fswap, .setearCC = 0, .setValue = 2 },    // 0x1C
-    [LDL] =  { .fetchValue = 2, .execute = fldl, .setearCC = 0, .setValue = 1 },     // 0x1D
-    [LDH] =  { .fetchValue = 2, .execute = fldh, .setearCC = 0, .setValue = 1 },     // 0x1E
-    [RND] =  { .fetchValue = 2, .execute = frnd, .setearCC = 0, .setValue = 1 },     // 0x1F
+    [MOV] =  { .fetchValue = 2, .execute = fmov,   .setearCC = 0, .setValue = 1 },  /* 0x10 MOV  */
+    [ADD] =  { .fetchValue = 2, .execute = fadd,   .setearCC = 1, .setValue = 1 },  /* 0x11 ADD  */
+    [SUB] =  { .fetchValue = 2, .execute = fsub,   .setearCC = 1, .setValue = 1 },  /* 0x12 SUB  */
+    [MUL] =  { .fetchValue = 2, .execute = fmul,   .setearCC = 1, .setValue = 1 },  /* 0x13 MUL  */
+    [DIV] =  { .fetchValue = 2, .execute = fdiv,   .setearCC = 1, .setValue = 1 },  /* 0x14 DIV  */
+    [CMP] =  { .fetchValue = 2, .execute = fsub,   .setearCC = 1, .setValue = 0 },  /* 0x15 CMP  */
+    [SHL] =  { .fetchValue = 2, .execute = fshl,   .setearCC = 1, .setValue = 1 },  /* 0x16 SHL  */
+    [SHR] =  { .fetchValue = 2, .execute = fshr,   .setearCC = 1, .setValue = 1 },  /* 0x17 SHR  */
+    [SAR] =  { .fetchValue = 2, .execute = fsar,   .setearCC = 1, .setValue = 1 },  /* 0x18 SAR  */
+    [AND] =  { .fetchValue = 2, .execute = fand,   .setearCC = 1, .setValue = 1 },  /* 0x19 AND  */
+    [OR] =   { .fetchValue = 2, .execute = f_or,   .setearCC = 1, .setValue = 1 },  /* 0x1A OR   */
+    [XOR] =  { .fetchValue = 2, .execute = fxor,   .setearCC = 1, .setValue = 1 },  /* 0x1B XOR  */
+    [SWAP] = { .fetchValue = 2, .execute = fswap,  .setearCC = 0, .setValue = 2 },  /* 0x1C SWAP */
+    [LDL] =  { .fetchValue = 2, .execute = fldl,   .setearCC = 0, .setValue = 1 },  /* 0x1D LDL  */
+    [LDH] =  { .fetchValue = 2, .execute = fldh,   .setearCC = 0, .setValue = 1 },  /* 0x1E LDH  */
+    [RND] =  { .fetchValue = 2, .execute = frnd,   .setearCC = 0, .setValue = 1 },  /* 0x1F RND  */
 };
 
-// Puntero a funciones del SYS
+/* Tabla de funciones del servicio SYS (sub-códigos dentro de la instrucción SYS).
+ * Solo se definen los índices que existen; entradas no inicializadas son NULL.
+ * Los índices son valores de 0x00..0x0F que provienen del primer operando de SYS.
+ */
 typedef void (*SysFunc)(TMV*);
 
 static const SysFunc sysTable[16] = {
@@ -392,10 +441,15 @@ static const SysFunc sysTable[16] = {
     [0x0F] = fsysBreakpoint,
 };
 
-// Puntero a funciones de condicion
+/* Tipo para funciones de condición usadas por las instrucciones de salto.
+ * Cada función consulta flags del MV y devuelve distinto de cero si la
+ * condición se cumple.
+ */
 typedef Long (*CondFunc)(TMV*);
 
-// Wrappers de salto
+/* Wrappers de condiciones para mapear el opcode de salto a la comprobación.
+ * Se usan en condVector para simplificar la lógica centralizada de saltos.
+ */
 Long condTrue(TMV* mv) { return 1; }
 Long condZ(TMV* mv)    { return fjz(mv); }
 Long condP(TMV* mv)    { return !fjz(mv) && !fjn(mv); }
@@ -404,6 +458,10 @@ Long condNZ(TMV* mv)   { return !fjz(mv); }
 Long condNP(TMV* mv)   { return fjz(mv) || fjn(mv); }
 Long condNN(TMV* mv)   { return !fjn(mv); }
 
+/* Vector que mapea cada tipo de salto (JMP/JZ/...) a su función de condición.
+ * El índice está alineado con el enum OpCode para que condVector[OPC] sea la
+ * función correcta a evaluar antes de ejecutar fmsl.
+ */
 static const CondFunc condVector[8] = {
     [JMP] = condTrue,
     [JZ]  = condZ,
@@ -416,14 +474,34 @@ static const CondFunc condVector[8] = {
 
 
 
-/// --- CODIGO ---
+/* --- CÓDIGO: implementación de la VM --- */
 /**
- * @brief Punto de entrada. Orquesta la configuración, carga y ejecución de la máquina virtual.
+ * @brief Punto de entrada de la VM.
+ *
+ * Esta función realiza la orquestación completa del ciclo de vida de la
+ * máquina virtual:
+ *  - Parseo de argumentos y configuración (archivos .vmx/.vmi, memoria, flags).
+ *  - Reserva de memoria dinámica según el parámetro m= (o el valor por defecto).
+ *  - Carga del programa (.vmx) o restauración de imagen (.vmi).
+ *  - Inicialización de tablas de segmentos y registros.
+ *  - Opcional: desensamblado si se pasó -d.
+ *  - Ejecución del programa hasta fin de segmento o instrucción STOP.
+ *
+ * Parámetros:
+ *  - argc/argv: argumentos de línea de comandos (ver README.md para uso).
+ *
+ * Valores de retorno / códigos de error:
+ *  - 0: ejecución correcta.
+ *  - 1..8: distintos errores documentados en errorMsgs (uso, fopen, segfault lógico,
+ *    instrucción inválida, división por cero, memoria insuficiente, stack overflow/underflow).
+ *
+ * Efectos secundarios:
+ *  - Reserva y liberación de memoria dinámica (mv.mem).
+ *  - Posible escritura de archivos .vmi si se ejecuta SYS breakpoint.
  */
 int main(int argc, char *argv[]) {
     TMV mv;
     SegmentSizes segSizes;
-    //int i = 0;
 
     mv.errorFlag = 0;
     mv.breakFlag = 0;
@@ -442,31 +520,28 @@ int main(int argc, char *argv[]) {
             // --- Lógica de Carga ---
             // Calcular el size de PS
             segSizes.paramSegSize = calculatePSSize(&mv);
-            createParamSegment(&mv, segSizes.paramSegSize);
-
             // Si hay un .vmx, se carga el programa
             if (mv.config.vmxPath != NULL) {
-                // Inicializacion en 0 de tamanos de segmentos
-                segSizes.extraSegSize = 0;
-                segSizes.stackSegSize = 0;
-                segSizes.constSegSize = 0;
-
-                // Inicializacion en 0 del Entry Point
-                mv.offsetEP = 0;
-
-                // Lectura del header del .vmx
-                readProgramHeader(&mv, &segSizes);
-
-                // Suma de los sizes para ver si sobrepasan el total de memoria
-                if (sumSegSizes(&segSizes) > mv.totalMemorySize)
+                if (segSizes.paramSegSize > mv.totalMemorySize)
                     errorHandler(&mv, ERR_MEM);
                 else {
-                    // Inicializaciones de tabla de segmentos y registros
-                    initializeTable(&mv, &segSizes);
-                    initializeRegisters(&mv, &segSizes);
+                    // Creacion del Param Segment
+                    createParamSegment(&mv, segSizes.paramSegSize);
 
-                    // Carga de memoria
-                    loadProgramData(&mv, &segSizes);
+                    // Lectura del header del .vmx
+                    readProgramHeader(&mv, &segSizes);
+
+                    // Suma de los sizes para ver si sobrepasan el total de memoria
+                    if (sumSegSizes(&segSizes) > mv.totalMemorySize)
+                        errorHandler(&mv, ERR_MEM);
+                    else {
+                        // Inicializaciones de tabla de segmentos y registros
+                        initializeTable(&mv, &segSizes);
+                        initializeRegisters(&mv, &segSizes);
+
+                        // Carga de memoria
+                        loadProgramData(&mv, &segSizes);
+                    }
                 }
             }
             // Si no hay .vmx pero sí .vmi, se carga la imagen
@@ -492,8 +567,6 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-
-
 
     return mv.errorFlag;
 }
@@ -553,6 +626,12 @@ void parseCommandLine(int argc, char* argv[], TMV* mv) {
     }
 }
 
+/**
+ * @brief Reserva memoria dinámica para la MV según mv->config.memoryKiB.
+ *
+ * - mv->totalMemorySize se actualiza en bytes.
+ * - mv->mem apunta al bloque reservado (o NULL si falla la reserva).
+ */
 void mallocMemory(TMV* mv) {
     mv->totalMemorySize = mv->config.memoryKiB * 1024;
     mv->mem = (UByte*) malloc(mv->totalMemorySize);
@@ -572,8 +651,13 @@ void readProgramHeader(TMV* mv, SegmentSizes* segSizes) {
         fread(header, 1, HEADER_P_COMUN, arch);
         segSizes->codeSegSize = ((UWord) header[6] << 8) | header[7];
 
-        if (header[5] == 1)
-            segSizes->dataSegSize = mv->totalMemorySize - segSizes->codeSegSize;
+        if (header[5] == 1) {
+            segSizes->dataSegSize = DEFAULT_SEG_SIZE;
+            segSizes->extraSegSize = 0;
+            segSizes->stackSegSize = DEFAULT_SEG_SIZE * 8;
+            segSizes->constSegSize = 0;
+            mv->offsetEP = 0;
+        }
         else if (header[5] == 2) {
             fread(header + HEADER_P_COMUN, 1, HEADER_P_V2, arch);
             segSizes->dataSegSize = ((UWord) header[8] << 8) | header[9];
@@ -652,7 +736,9 @@ void readImage(TMV* mv) {
     }
 }
 
-// Funcion auxiliar para leer un UWord (2 bytes) en un archivo en formato Big Endian
+/**
+ * @brief Lee un UWord (2 bytes) en formato Big Endian desde un archivo.
+ */
 UWord readUWordBE(FILE* arch) {
     UWord data = 0;
     data |= (fgetc(arch) << 8);
@@ -660,7 +746,9 @@ UWord readUWordBE(FILE* arch) {
     return data;
 }
 
-// Funcion auxiliar para leer un Long (4 bytes) en un archivo en formato Big Endian
+/**
+ * @brief Lee un Long (4 bytes) en formato Big Endian desde un archivo.
+ */
 Long readLongBE(FILE* arch) {
     Long data = 0;
     data |= (fgetc(arch) << 24);
@@ -706,13 +794,17 @@ void writeImage(TMV* mv) {
     }
 }
 
-// Funcion auxiliar para escribir un UWord (2 bytes) en un archivo en formato Big Endian
+/**
+ * @brief Escribe un UWord (2 bytes) en formato Big Endian en un archivo.
+ */
 void writeUWordBE(FILE* arch, UWord data) {
     fputc((data >> 8) & MASK_SETMEM, arch);
     fputc(data & MASK_SETMEM, arch);
 }
 
-// Funcion auxiliar para escribir un Long (4 bytes) en un archivo en formato Big Endian
+/**
+ * @brief Escribe un Long (4 bytes) en formato Big Endian en un archivo.
+ */
 void writeLongBE(FILE* arch, Long data) {
     fputc((data >> 24) & MASK_SETMEM, arch);
     fputc((data >> 16) & MASK_SETMEM, arch);
@@ -760,21 +852,37 @@ void createParamSegment(TMV* mv, UWord psSize) {
     argvArraySize = mv->config.paramsArgc * sizeof(Long);
     argvPhysicalStart = psSize - argvArraySize;
     currentStringOffset = 0;
-    psLogicalPtr = 0;   // Si existe, siempre se ubica en 0
+    /*
+     * psLogicalPtr: dirección lógica base dentro del Param Segment.
+     * Por convención, si existe el Param Segment su base lógica es 0.
+     * currentStringOffset es el offset físico dentro del PS donde se van
+     * escribiendo las cadenas, mientras que argvPhysicalStart apunta al
+     * array de punteros físicos que va al final del segmento.
+     */
+    psLogicalPtr = 0;   /* Si existe, siempre se ubica en 0 */
+    /* Cantidad de bytes usados para almacenar cada puntero lógico (4 bytes). */
     cantBytes = 4;
 
     if (mv->config.paramsArgc > 0) {
         for (i = 0; i < mv->config.paramsArgc; i++) {
-            // Escribir el string
+            /* Escribir la cadena en el inicio del PS (posición física currentStringOffset).
+             * Observación: usamos strcpy porque sabemos que hay suficiente espacio
+             * (psSize fue calculado previamente sumando longitudes y espacio para
+             * el array de punteros).
+             */
             strcpy((char*)&mv->mem[currentStringOffset], mv->config.paramsArgv[i]);
 
-            // Crear y escribir el puntero lógico
+            /* Construcción del puntero lógico: la parte alta identifica el
+             * segmento (psLogicalPtr) y la parte baja es el offset dentro del
+             * segmento (currentStringOffset). Se escribe el puntero en formato
+             * big-endian en el área argvPhysicalStart + i*sizeof(Long).
+             */
             stringLogicalPtr = psLogicalPtr | currentStringOffset;
             destAddr = argvPhysicalStart + i * sizeof(Long);
             for (j = 0; j < cantBytes; j++)
                 mv->mem[destAddr + j] = (UByte) (stringLogicalPtr >> (8 * (cantBytes - 1 - j)) & MASK_SETMEM);
 
-            // Actualizar el offset
+            /* Avanzar al siguiente espacio libre para la siguiente cadena. */
             currentStringOffset += strlen(mv->config.paramsArgv[i]) + 1;
         }
     }
@@ -797,12 +905,18 @@ void initializeTable(TMV* mv, SegmentSizes* segSizes) {
 
 
     // Iteramos sobre el mapa que define el orden y la metadata.
+    /* Recorremos segmentLayoutMap —que define el orden físico de los
+     * segmentos— y, para cada segmento con tamaño > 0, añadimos una
+     * entrada en la tabla física mv->seg[]. physicalOffset acumula la
+     * dirección física (offset dentro de mv->mem) actual.
+     */
     for (i = 0; i < NUM_SEGMENTS; i++) {
-        // Obtenemos el tamaño del segmento actual de forma automática.
         currentSize = *(UWord*)((UByte*)segSizes + segmentLayoutMap[i].size_offset);
 
         if (currentSize > 0) {
-            // Si el segmento tiene tamaño, le creamos una entrada en la tabla.
+            /* tableIndex es el "slot" físico donde almacenamos el descriptor.
+             * La base almacenada en la tabla es la dirección física dentro de mv->mem.
+             */
             mv->seg[tableIndex].base = physicalOffset;
             mv->seg[tableIndex].size = currentSize;
 
@@ -825,9 +939,16 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes) {
         currentReg = segmentLayoutMap[i].reg;
 
         if (currentSize > 0) {
+            /* Guardamos en el registro de segmento la combinación
+             * (índice_tabla << 16). De esta forma el registro contiene
+             * tanto el índice físico al descriptor como la parte alta del
+             * puntero lógico. Más tarde decodeSeg/ decodeAddr esperan este
+             * formato.
+             */
             mv->reg[currentReg] = tableIndex << 16;
             tableIndex++;
         } else {
+            /* Si el segmento no existe, dejamos el registro en NIL. */
             mv->reg[currentReg] = NIL;
         }
     }
@@ -836,6 +957,10 @@ void initializeRegisters(TMV* mv, SegmentSizes* segSizes) {
     initIP(mv);
 
     if (mv->reg[SS] != NIL)
+        /* SP se inicializa en la "parte alta" del stack: base física del
+         * descriptor (mv->seg[index].base) + tamaño del segmento. Como
+         * mv->reg[SS] contiene (index<<16), accedemos con (mv->reg[SS] >> 16).
+         */
         mv->reg[SP] = mv->reg[SS] + mv->seg[mv->reg[SS] >> 16].size;
     else
         mv->reg[SP] = NIL; // Si no hay pila, SP también es inválido
@@ -848,7 +973,7 @@ void initIP(TMV* mv) {
     mv->reg[IP] = mv->reg[CS] | mv->offsetEP;
 }
 
-/// --- DISASSAMBLER ---
+/* --- DISASSEMBLER --- */
 /**
  * @brief Orquesta el proceso de desensamblado.
  * Imprime primero el contenido del Const Segment y luego el del Code Segment.
@@ -862,14 +987,15 @@ void disASM(TMV* mv) {
  * @brief Desensambla y muestra el contenido del Const Segment como cadenas de caracteres.
  */
 void disASMConst(TMV* mv) {
-    Long currentAddr, len, maxHexBytes, i;
+    Long currentAddr, physicalLimitKS, len, maxHexBytes, i;
     UByte car;
     char stringFull[256]; // Buffer para la string completa
 
     if (decodeSeg(mv, KS) != NIL) {
+        physicalLimitKS = mv->seg[decodeSeg(mv, KS)].base + mv->seg[decodeSeg(mv, KS)].size;
         currentAddr = mv->seg[decodeSeg(mv, KS)].base;
 
-        while (currentAddr < mv->seg[decodeSeg(mv, KS)].size) {
+        while (currentAddr < physicalLimitKS) {
             len = 0;
 
             // Imprimir la dirección de memoria
@@ -1038,7 +1164,7 @@ void disASMOPStrToBuf(TMV* mv, Long operand, UByte type, char* buf, size_t bufle
     }
 }
 
-/// --- EXECUTE PROGRAM ---
+/* --- EJECUCIÓN DEL PROGRAMA --- */
 /**
  * @brief Bucle principal de ejecución. Ejecuta instrucciones una por una mientras el IP esté en el Code Segment.
  */
@@ -1108,7 +1234,7 @@ void initializeMainStack(TMV* mv) {
     fpush(mv, &valueToPush, NULL);
 }
 
-/// --- DECODIFICADORES ---
+/* --- DECODIFICADORES --- */
 /**
  * @brief Obtiene el índice de la tabla de segmentos a partir de un puntero lógico de segmento.
  */
@@ -1116,7 +1242,13 @@ Long decodeSeg(TMV* mv, Long cod) {
     return mv->reg[cod] >> 16;
 }
 
-//Decodificador de direccion logica a direccion fisica
+/**
+ * @brief Decodifica una dirección lógica (segmento:offset) a dirección física.
+ *
+ * Valida que el offset esté dentro de los límites del segmento y devuelve
+ * la dirección física (base del segmento + offset). Si el offset está fuera
+ * del segmento, setea el error ERR_SEG mediante errorHandler.
+ */
 Long decodeAddr(TMV* mv, Long logical) {
     Word segIndex, offset;
 
@@ -1129,7 +1261,11 @@ Long decodeAddr(TMV* mv, Long logical) {
     return mv->seg[segIndex].base + offset;
 }
 
-// Verifica si una dirección logica esta dentro de su segmento
+/**
+ * @brief Indica si una dirección lógica está dentro del tamaño del segmento.
+ *
+ * Devuelve distinto de cero si offset < mv->seg[segIndex].size.
+ */
 int inSegment(TMV* mv, Long logical) {
     Word segIndex, offset;
 
@@ -1146,8 +1282,19 @@ int inCS(TMV* mv, Long logical) {
     return ((logical >> 16) == (mv->reg[CS] >> 16)) && inSegment(mv, logical);
 }
 
-/// --- INICIO DE INSTRUCCION ---
-// Agarra un byte de instruccion. Setea OPC, el tipo de OP1 y el tipo de OP2
+/* --- FETCH / DECODIFICACIÓN DE INSTRUCCIÓN --- */
+/**
+ * @brief Lee el byte de instrucción apuntado por IP y extrae OPC/OP1/OP2.
+ *
+ * Formato del byte:
+ *  - bits 0..4: opcode (OPC)
+ *  - bits 5..6: OP1 (puede no existir)
+ *  - bits 6..7: OP2 o OP1 (dependiendo de la existencia del anterior)
+ *
+ * Efecto:
+ *  - mv->reg[OPC], mv->reg[OP1], mv->reg[OP2] quedan cargados con los
+ *    metadatos (tipo/tamaño/valor parcial).
+ */
 void fetchInstruction(TMV* mv) {
     Byte temp;
 
@@ -1157,15 +1304,40 @@ void fetchInstruction(TMV* mv) {
 
     mv->reg[OP1] = 0;
     mv->reg[OP2] = 0;
+    /*
+     * Decodificación rápida del byte de instrucción:
+     * - Los campos de tipo/tamaño de operandos se colocan en los 8 bits
+     *   más significativos de mv->reg[OP1]/mv->reg[OP2] tras desplazar.
+     * - Para simplificar la lectura posterior se almacenan los metadatos
+     *   ya alineados en los registros OP1/OP2; los bytes reales del
+     *   operando se OR-ean más tarde (fetchOperators -> fetchOperand).
+     *
+     * Notas sobre los shifts:
+     * - MASKB_OP2 contiene los bits de tipo para el segundo operando
+     *   (o el primero si no hay dos operandos). Se desplaza 18 para
+     *   posicionar su tamaño/tipo en el byte más alto del Long.
+     * - Si existe el campo OP1, movemos lo previamente puesto en OP1
+     *   a OP2 y colocamos el nuevo tipo de OP1 desplazado 20 para
+     *   mantener consistencia de alineación.
+     */
     mv->reg[OP1] = (Long)(temp & MASKB_OP2) << 18;
 
-    if ((temp & MASKB_OP1) != 0) {              //Si hay dos operandos, mueve la OP1 a OP2 y agarra el tipo de OP1
+    if ((temp & MASKB_OP1) != 0) {
+        /* Si hay dos operandos: rotamos y colocamos los tipos en los
+         * bytes altos correspondientes para que fetchOperators pueda
+         * extraer el número de bytes a leer con (reg >> 24).
+         */
         mv->reg[OP2] = mv->reg[OP1];
         mv->reg[OP1] = (Long)(temp & MASKB_OP1) << 20;
     }
 }
 
-// Prepara a los operandos para que reciban su informacion
+/**
+ * @brief Completa la información de los operandos leyendo los bytes siguientes.
+ *
+ * Usa los campos de tipo previamente cargados en OP1/OP2 para determinar
+ * cuántos bytes leer de la instrucción y construye los valores parciales.
+ */
 void fetchOperators(TMV* mv) {
     int op1Bytes, op2Bytes, offset = 1;
 
@@ -1176,7 +1348,15 @@ void fetchOperators(TMV* mv) {
         mv->reg[OP1] |= fetchOperand(mv, op1Bytes, &offset);
 }
 
-// Crea un registro para un operando y lo retorna
+/**
+ * @brief Lee 'bytes' desde la secuencia de instrucciones y construye el operando.
+ *
+ * Parsea los bytes a partir de mv->reg[IP] + *offset y devuelve un valor
+ * Long que contiene el contenido bruto del operando (sin interpretación).
+ *
+ * Si el operando es un inmediato (ocupa 2 bytes) y el MSB indica signo, se hace 
+ * sign-extension manual para que el valor devuelto esté correctamente extendido a 24 bits.
+ */
 Long fetchOperand(TMV* mv, int bytes, int* offset) {
     Long logical, physical, temp = 0, i = bytes;
 
@@ -1198,11 +1378,18 @@ Long fetchOperand(TMV* mv, int bytes, int* offset) {
     return temp;
 }
 
+/**
+ * @brief Avanza el registro IP en función del tamaño de la instrucción actual.
+ *
+ * Suma 1 (byte de la instruccion) más los bytes de OP1 y OP2 (almacenados en los
+ * 8 bits más significativos de OP1/OP2) para posicionar IP en la siguiente
+ * instrucción.
+ */
 void addIP(TMV* mv) {
     mv->reg[IP] += (Long) (1 + (mv->reg[OP1] >> 24) + (mv->reg[OP2] >> 24));
 }
 
-/// --- MEMORIA ---
+/* --- SUBSISTEMA DE MEMORIA --- */
 /**
  * @brief Calcula una dirección lógica a partir de un operando de memoria [reg+off] y la guarda en LAR.
  */
@@ -1233,7 +1420,12 @@ void setLARFromAddress(TMV* mv, Long logicalAddress) {
         mv->reg[LAR] = logicalAddress;
 }
 
-// Seteo del valor del MAR cuando se trabaja con memoria
+/**
+ * @brief Calcula y setea el registro MAR a partir de una dirección lógica.
+ *
+ * MAR almacena en sus 2 bytes altos la cantidad de bytes y en los 2 bajos
+ * la dirección física. Esta función valida límites y actualiza mv->reg[MAR].
+ */
 void setMAR(TMV* mv, Long cantBytes, Long logical) {
     Long physical;
 
@@ -1242,11 +1434,20 @@ void setMAR(TMV* mv, Long cantBytes, Long logical) {
         if (physical + cantBytes - 1 >= mv->totalMemorySize)
             errorHandler(mv, ERR_SEG);
         else
+            /* MAR encoding: los 16 bits altos almacenan la cantidad de
+             * bytes a transferir, los 16 bits bajos contienen la
+             * dirección física. Ej: MAR = (cantBytes << 16) | physical
+             */
             mv->reg[MAR] = (cantBytes << 16) | physical;
     }
 }
 
-// Get del valor de memoria al MBR
+/**
+ * @brief Lee desde memoria física al registro MBR usando el contenido de MAR.
+ *
+ * Interpreta mv->reg[MAR] para determinar cantidad de bytes y dirección
+ * física y coloca el valor resultante en mv->reg[MBR].
+ */
 void getMemory(TMV* mv) {
     Long cantBytes, physical, temp;
     int i;
@@ -1257,6 +1458,11 @@ void getMemory(TMV* mv) {
         temp = 0;
 
         for (i = 0; i < cantBytes; i++) {
+            /* Leemos bytes en orden de mayor a menor significancia y los
+             * concatenamos en temp. Si cantBytes < 4, el valor queda en
+             * las posiciones menos significativas del Long y se corresponde
+             * con la representación big-endian del dato leído.
+             */
             temp |= (Long) mv->mem[physical + i] << (8 * (cantBytes - 1 - i));
         }
 
@@ -1264,7 +1470,11 @@ void getMemory(TMV* mv) {
     }
 }
 
-// Set del valor del MBR a la memoria
+/**
+ * @brief Escribe el contenido de MBR en memoria física según MAR.
+ *
+ * Trunca el valor si el tamaño a escribir es menor que 4 bytes.
+ */
 void setMemory(TMV* mv) {
     Long cantBytes, physical;
     int i;
@@ -1273,12 +1483,16 @@ void setMemory(TMV* mv) {
         cantBytes = mv->reg[MAR] >> 16;
         physical = mv->reg[MAR] & MASK_PHY;
 
+        /* Escribimos desde el byte más significativo del campo MBR hacia
+         * el menos significativo según cantBytes; si cantBytes < 4, se
+         * truncará el valor superior automáticamente (operación de shift).
+         */
         for (i = 0; i < cantBytes; i++)
             mv->mem[physical + i] = mv->reg[MBR] >> (8 * (cantBytes - 1 - i)) & MASK_SETMEM;
     }
 }
 
-/// --- OPERATORS ---
+/* --- OPERANDOS (lectura/escritura) --- */
 /**
  * @brief Obtiene el valor de un operando, considerando su tipo y tamaño variable.
  * Siempre devuelve un Long (32 bits) con el signo extendido.
@@ -1382,7 +1596,13 @@ void setOP(TMV* mv, Long operandA, Long operandB) {
     }
 }
 
-// Setear el CC
+
+/**
+ * @brief Actualiza el registro CC (flags) según el valor proporcionado.
+ *
+ * - Bit Z (0x40000000) se setea si valor == 0.
+ * - Bit N (0x80000000) se setea si valor < 0.
+ */
 void setCC(TMV* mv, Long valor) {
     if (valor == 0)
         mv->reg[CC] |= 0x40000000;
@@ -1395,15 +1615,23 @@ void setCC(TMV* mv, Long valor) {
         mv->reg[CC] &= 0x7FFFFFFF;
 }
 
-/// --- SYS ---
-// Funcion SYS - Llamadas al sistema
+/* --- SERVICIOS DEL SISTEMA (SYS) --- */
+/**
+ * @brief SYS: Dispone las llamadas al sistema.
+ *
+ * El primer operando indica la función SYS a ejecutar (índice en sysTable).
+ */
 void fsys(TMV* mv, Long* value1, Long* value2) {
     if (sysTable[*value1]) {
         sysTable[*value1](mv);
     }
 }
 
-// SYS Read
+/**
+ * @brief SYS read: lee valores desde stdin y los escribe en memoria.
+ *
+ * Interpreta EAX/ECX/EDX para conocer formato, cantidad y dirección.
+ */
 void fsysRead(TMV* mv) {
     Long read = 0;
     char car, binStr[33];
@@ -1461,7 +1689,13 @@ void fsysRead(TMV* mv) {
     while ((car = getchar()) != '\n' && car != EOF);
 }
 
-// Recibe un número decimal y devulve su representación binaria en complemento a 2 en formato String
+/**
+ * @brief Convierte un entero (Long) a su representación binaria en C2.
+ *
+ * Rellena el buffer binStr con la representación en complemento a 2. El
+ * llamador debe asegurar que binStr tenga suficiente espacio (>=33 bytes
+ * para 32 bits + terminador).
+ */
 void decToBinC2(Long value, char *binStr) {
     ULong uValue;
     int bitIndex, stringPos, firstOneFound, bit;
@@ -1501,7 +1735,11 @@ void decToBinC2(Long value, char *binStr) {
     binStr[stringPos] = '\0';
 }
 
-//SYS Write
+/**
+ * @brief SYS write: lee memoria y volca su representación por stdout.
+ *
+ * Interpreta EAX/ECX/EDX para conocer formato, cantidad y dirección.
+ */
 void fsysWrite(TMV* mv) {
     Long write;
     char c, binStr[33];
@@ -1529,7 +1767,10 @@ void fsysWrite(TMV* mv) {
                 printf(" 0o%o", write);
             if (mv->reg[EAX] & 0x02) {
                 printf(" ");
-                // Imprime cada byte como caracter, de más significativo a menos
+                /* Imprime cada byte como caracter, de más significativo a menos.
+                 * Se protegen los no imprimibles con '.' para mantener salida
+                 * alineada y legible en consola.
+                 */
                 for (j = cantBytes - 1; j >= 0; j--) {
                     c = (char)((write >> (8 * j)) & 0xFF);
                     if (32 <= c && c <= 126)
@@ -1548,6 +1789,12 @@ void fsysWrite(TMV* mv) {
     }
 }
 
+/**
+ * @brief SYS string read: lee una línea desde stdin y la escribe en memoria.
+ *
+ * Lee hasta ENTER o hasta el límite indicado en ECX (si ECX == NIL se
+ * considera ilimitado). Escribe el terminador '\0' al final.
+ */
 void fsysStrRead(TMV* mv) {
     UWord cantMaxCar, i = 0;
     char car;
@@ -1574,6 +1821,11 @@ void fsysStrRead(TMV* mv) {
     }
 }
 
+/**
+ * @brief SYS string write: imprime una cadena almacenada en memoria.
+ *
+ * Lee byte a byte desde la dirección en EDX hasta encontrar '\0'.
+ */
 void fsysStrWrite(TMV* mv) {
     Long currentAddr;
     char car;
@@ -1638,8 +1890,13 @@ void fsysBreakpoint(TMV* mv) {
     }
 }
 
-/// --- MICRO SEQUENCE LOGIC ---
-// Funcion de centralizada de logica de saltos
+/* --- LÓGICA DE MICROSECUENCIAS / SALTOS --- */
+/**
+ * @brief Lógica centralizada de saltos (JMP/JZ/JP/...).
+ *
+ * Si la condición correspondiente al opcode actual (mv->reg[OPC]) se cumple,
+ * reemplaza el offset bajo de IP por value1 (manteniendo la parte alta).
+ */
 void fmsl(TMV* mv, Long* value1, Long* value2) {
     if (condVector[mv->reg[OPC]](mv)) {
         mv->reg[IP] &= MASK_LDH;
@@ -1647,22 +1904,38 @@ void fmsl(TMV* mv, Long* value1, Long* value2) {
     }
 }
 
-// Boolean para indicar si saltar por cero
+/**
+ * @brief Condición: Z flag (cero) activa.
+ *
+ * Devuelve distinto de cero si Z está seteado.
+ */
 Long fjz(TMV* mv) {
     return mv->reg[CC] & CC_Z;
 }
 
-// Boolean para indicar si saltar por negativo
+/**
+ * @brief Condición: N flag (negativo) activa.
+ *
+ * Devuelve distinto de cero si N está seteado.
+ */
 Long fjn(TMV* mv) {
     return mv->reg[CC] & CC_N;
 }
 
-/// --- OPERACIONES ---
-// Instruccion NOT - Niega bit a bit
+/* --- INSTRUCCIONES ARITMÉTICAS Y LÓGICAS --- */
+/**
+ * @brief NOT: niega bit a bit el operando value1.
+ */
 void fnot(TMV* mv, Long* value1, Long* value2) {
     *value1 = ~ *value1;
 }
 
+/**
+ * @brief PUSH: Empuja un valor en la pila.
+ *
+ * Disminuye SP en 4 y escribe el valor en la nueva posición de pila. Se
+ * valida overflow de stack comparando direcciones físicas.
+ */
 void fpush(TMV* mv, Long* value1, Long* value2) {
     mv->reg[SP] -= 4;
     if (decodeAddr(mv, mv->reg[SP]) < decodeAddr(mv, mv->reg[SS]))
@@ -1675,6 +1948,12 @@ void fpush(TMV* mv, Long* value1, Long* value2) {
     }
 }
 
+/**
+ * @brief POP: Saca un valor de la pila y lo devuelve en value1.
+ *
+ * Verifica underflow, lee 4 bytes desde la dirección apuntada por SP y
+ * luego incrementa SP.
+ */
 void fpop(TMV* mv, Long* value1, Long* value2) {
     Long stackEndAddress;
 
@@ -1690,6 +1969,9 @@ void fpop(TMV* mv, Long* value1, Long* value2) {
     }
 }
 
+/**
+ * @brief CALL: guarda la dirección de retorno en la pila y salta a value1.
+ */
 void fcall(TMV* mv, Long* value1, Long* value2) {
     Long returnAddr;
 
@@ -1699,37 +1981,52 @@ void fcall(TMV* mv, Long* value1, Long* value2) {
     mv->reg[IP] |= (*value1 & MASK_LDL);
 }
 
+/**
+ * @brief RET: recupera la dirección de retorno (POP) y la carga en IP.
+ */
 void fret(TMV* mv, Long* value1, Long* value2) {
     fpop(mv, value1, value2);
     mv->reg[IP] = *value1;
 }
 
-// Instruccion STOP - Setea IP a STOP_VALUE
+/**
+ * @brief STOP: finaliza la ejecución fijando IP a NIL.
+ */
 void fstop(TMV* mv, Long* value1, Long* value2) {
     mv->reg[IP] = NIL;
 }
 
-// Instruccion MOV - Paso el valor de value2 a value1
+/**
+ * @brief MOV: copia el valor de value2 en value1, modificando value1.
+ */
 void fmov(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value2;
 }
 
-// Instruccion ADD - Suma los valores de value1 y value2
+/**
+ * @brief ADD: suma value2 a value1, modificando value1.
+ */
 void fadd(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 + *value2;
 }
 
-// Instruccion SUB - Resta los valores de value1 y value2
+/**
+ * @brief SUB: resta value2 de value1, modificando value1.
+ */
 void fsub(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 - *value2;
 }
 
-// Instruccion MUL - Multiplicas los valores de value1 y value2C
+/**
+ * @brief MUL: multiplica value1 por value2, modificando value1.
+ */
 void fmul(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 * *value2;
 }
 
-// Instruccion DIV - Divide los valores de value1 y value2. Setea el resto en AC.
+/**
+ * @brief DIV: divide value1 entre value2, guarda el cociente en value1 y el resto en AC.
+ */
 void fdiv(TMV* mv, Long* value1, Long* value2) {
     Long resto;
 
@@ -1754,37 +2051,51 @@ void fdiv(TMV* mv, Long* value1, Long* value2) {
     }
 }
 
-// Instruccion SHL - Desplazamientos de bits a izquierda.
+/**
+ * @brief SHL: desplaza value1 a la izquierda por value2 bits.
+ */
 void fshl(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 << *value2;
 }
 
-// Instruccion SHR - Desplazamientos de bits a derecha.
+/**
+ * @brief SHR: desplaza lógicamente (no propaga signo) value1 a la derecha por value2 bits.
+ */
 void fshr(TMV* mv, Long* value1, Long* value2) {
     *value1 = (Long) ((ULong) *value1 >> *value2);
 }
 
-// Instruccion SAR - Desplazamientos de bits a derecha pero propaga signo.
+/**
+ * @brief SAR: desplaza aritméticamente (propaga signo) value1 a la derecha por value2 bits.
+ */
 void fsar(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 >> *value2;
 }
 
-// Instruccion AND - Operacion logica AND bit a bit.
+/**
+ * @brief AND: operación bit a bit AND entre value2 y value1, modificando value1.
+ */
 void fand(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 & *value2;
 }
 
-// Instruccion OR - Operacion logica OR bit a bit.
+/**
+ * @brief OR: operación bit a bit OR entre value2 y value1, modificando value1.
+ */
 void f_or(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 | *value2;
 }
 
-// Instruccion XOR - Operacion logica XOR bit a bit.
+/**
+ * @brief XOR: operación bit a bit XOR entre value2 y value1, modificando value1.
+ */
 void fxor(TMV* mv, Long* value1, Long* value2) {
     *value1 = *value1 ^ *value2;
 }
 
-// Intruccion SWAP - Intercambia los valores de los value
+/**
+ * @brief SWAP: intercambia value1 y value2.
+ */
 void fswap(TMV* mv, Long* value1, Long* value2) {
     Long aux = 0;
     aux = *value1;
@@ -1792,20 +2103,30 @@ void fswap(TMV* mv, Long* value1, Long* value2) {
     *value2 = aux;
 }
 
-// Instruccion LDL - Carga los 2 bytes menos significatidos del value1 con los dos bytes menos significativos del value2
+/**
+ * @brief LDL: carga los 2 bytes menos significativos de value1 con los 2 bytes
+ * menos significativos de value2.
+ */
 void fldl(TMV* mv, Long* value1, Long* value2) {
     *value2 = *value2 & MASK_LDL;
     *value1 = (*value1 & MASK_LDH) | *value2;
 }
 
-
-// Instruccion LDH - Carga los 2 bytes mas significatidos del value1 con los dos bytes menos significativos del value2
+/**
+ * @brief LDH: carga los 2 bytes más significativos de value1 con los 2 bytes
+ * menos significativos de value2.
+ */
 void fldh(TMV* mv, Long* value1, Long* value2) {
     *value2 = (*value2 & MASK_LDL) << 16;
     *value1 = (*value1 & MASK_LDL) | *value2;
 }
 
-// Instruccion RND - Setea en value1 con un numero random entre 0 y value2
+/**
+ * @brief RND: genera un entero aleatorio en [0, value2) y lo escribe en value1.
+ *
+ * Si value2 <= 1, el resultado es 0. Se usa rand() con rechazo para evitar
+ * sesgos cuando RAND_MAX no es múltiplo de value2.
+ */
 void frnd(TMV* mv, Long* value1, Long* value2) {
     int r, lim;
 
