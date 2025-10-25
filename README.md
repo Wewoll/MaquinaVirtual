@@ -45,13 +45,13 @@ El programa a ejecutar debe estar previamente escrito en el lenguaje **Assembler
 El programa se ejecuta desde la línea de comandos con la siguiente sintaxis:
 
 ```sh
-vmx [filename.vmx] [filename.vmi] [m=TAMAÑO] [-d] [-p param1 param2 ...]
+vmx [filename.vmx] [filename.vmi] [m=M] [-d] [-p param1 param2 ...]
 ```
 
 - **vmx** es el programa ejecutable del proceso Ejecutor o Máquina Virtual.
-- **filename.vmx** (opcional*) es la ruta y nombre del archivo con el programa en lenguaje máquina (puede ser cualquier nombre con extensión .vmx).
-- **filename.vmi** (opcional*) es la ruta y nombre del archivo donde se almacenará la imagen de la máquina virtual (puede ser cualquier nombre con extensión .vmi).
-- **m=M** (opcional) permite indicar el tamaño de la memoria principal, donde M es un valor expresado en KiB. Si se omite, el valor por defecto sigue siendo 16 KiB.
+- **filename.vmx** (opcional*) es la ruta y nombre del archivo con el programa en lenguaje máquina (puede ser cualquier nombre con extensión **.vmx**).
+- **filename.vmi** (opcional*) es la ruta y nombre del archivo donde se almacenará la imagen de la máquina virtual (puede ser cualquier nombre con extensión **.vmi**).
+- **m=M** (opcional) permite indicar el tamaño de la memoria principal, donde **M** es un valor expresado en KiB. Si se omite, el valor por defecto sigue siendo 16 KiB.
 - **-d** (opcional) es un flag que fuerza a la máquina virtual a mostrar el código Assembler correspondiente al código máquina cargado en la memoria principal.
 - **-p** (opcional) es un flag que sirve para indicar los parámetros (**param1 param2 ... paramN**) que se le deben pasar a la subrutina principal del proceso. Siempre se debe escribir al final del comando.
 
